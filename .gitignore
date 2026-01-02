@@ -1,0 +1,9 @@
+build/
+nbproject/private/
+dist/
+${platforms}
+/nbbuild/
+/dist/
+/nbdist/
+/nbactions.xml
+.nb-gradle/
