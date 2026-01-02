@@ -10,10 +10,10 @@ import java.math.BigInteger;
 /**
  * Cryptographic utilities - SECURE LAYOUT (PII ENCRYPTED)
  * 
- * New Card Structure (64 bytes):
+ * New Card Structure (80 bytes):
  * [0-1]   UserID (2 bytes)
- * [2-33]  Encrypted Area (32 bytes, AES-128/ECB/NoPadding):
- *          Plaintext layout (32 bytes):
+ * [2-49]  Encrypted Area (48 bytes, AES-128/ECB/NoPadding):
+ *          Plaintext layout (48 bytes):
  *            - Balance (4 bytes, BE)
  *            - ExpiryDays (2 bytes, BE)
  *            - DOB Day (1 byte)
@@ -21,10 +21,11 @@ import java.math.BigInteger;
  *            - DOB Year (2 bytes, BE)
  *            - NameLen (1 byte, 0..21)
  *            - FullName UTF-8 bytes (max 21)
- *            - Padding with zeros to 32 bytes
- * [34]    PIN Retry Counter (1 byte)
- * [35-50] PIN Hash (16 bytes, SHA-256 truncated to 16)
- * [51-63] Reserved (zeros)
+ *            - CCCD ASCII (12 bytes)
+ *            - Padding with zeros to 48 bytes (4 bytes)
+ * [50]    PIN Retry Counter (1 byte)
+ * [51-66] PIN Hash (16 bytes, SHA-256 truncated to 16)
+ * [67-79] Reserved (zeros)
  */
 public class CryptoHelper {
     
@@ -74,24 +75,24 @@ public class CryptoHelper {
     /**
      * Encrypt two-block sensitive payload (32 bytes) using AES-128 (ECB/NoPadding)
      */
-    public static byte[] encryptSensitivePayload(byte[] payload32, String pin) throws Exception {
-        if (payload32 == null || payload32.length != 32) {
-            throw new IllegalArgumentException("Payload must be exactly 32 bytes");
+    public static byte[] encryptSensitivePayload(byte[] payload48, String pin) throws Exception {
+        if (payload48 == null || payload48.length != 48) {
+            throw new IllegalArgumentException("Payload must be exactly 48 bytes");
         }
         SecretKeySpec aesKey = deriveAESKeyFromPIN(pin);
         Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, aesKey);
-        return cipher.doFinal(payload32);
+        return cipher.doFinal(payload48);
     }
     
-    public static byte[] decryptSensitivePayload(byte[] encrypted32, String pin) throws Exception {
-        if (encrypted32 == null || encrypted32.length != 32) {
-            throw new IllegalArgumentException("Encrypted data must be 32 bytes");
+    public static byte[] decryptSensitivePayload(byte[] encrypted48, String pin) throws Exception {
+        if (encrypted48 == null || encrypted48.length != 48) {
+            throw new IllegalArgumentException("Encrypted data must be 48 bytes");
         }
         SecretKeySpec aesKey = deriveAESKeyFromPIN(pin);
         Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, aesKey);
-        return cipher.doFinal(encrypted32);
+        return cipher.doFinal(encrypted48);
     }
     
     /**
@@ -135,20 +136,21 @@ public class CryptoHelper {
     }
     
     /**
-     * Build card data for WRITE - OLD LAYOUT
+     * Build card data for WRITE - 80-byte layout with 48-byte encrypted block
      */
     public static byte[] buildCardData(int userId, int balance, short expiry, 
                                        String pin, byte pinRetry,
                                        byte dobDay, byte dobMonth, short dobYear,
-                                       String fullName) throws Exception {
-        byte[] cardData = new byte[64];
+                                       String fullName,
+                                       String cccd) throws Exception {
+        byte[] cardData = new byte[80];
         
         // [0-1] UserID
         cardData[0] = (byte) ((userId >> 8) & 0xFF);
         cardData[1] = (byte) (userId & 0xFF);
         
-        // Build 32-byte plaintext payload
-        byte[] payload = new byte[32];
+        // Build 48-byte plaintext payload
+        byte[] payload = new byte[48];
         // Balance
         payload[0] = (byte) ((balance >> 24) & 0xFF);
         payload[1] = (byte) ((balance >> 16) & 0xFF);
@@ -169,50 +171,55 @@ public class CryptoHelper {
         if (nameLen > 0) {
             System.arraycopy(nameBytes, 0, payload, 11, nameLen);
         }
-        // Remaining payload bytes already zero
-
-        // Encrypt and place into [2-33]
+        // CCCD (ASCII) 12 bytes at payload[32..43]
+        byte[] cccdBytes = cccd != null ? cccd.getBytes("US-ASCII") : new byte[0];
+        int copyLen = Math.min(cccdBytes.length, 12);
+        if (copyLen > 0) {
+            System.arraycopy(cccdBytes, 0, payload, 32, copyLen);
+        }
+        // Padding with zeros is automatic in new byte[]
+        // Encrypt and place into [2-49]
         byte[] enc = encryptSensitivePayload(payload, pin);
-        System.arraycopy(enc, 0, cardData, 2, 32);
+        System.arraycopy(enc, 0, cardData, 2, 48);
 
-        // [34] PIN Retry Counter
-        cardData[34] = pinRetry;
+        // [50] PIN Retry Counter
+        cardData[50] = pinRetry;
 
-        // [35-50] PIN Hash (16 bytes)
+        // [51-66] PIN Hash (16 bytes)
         byte[] pinHash = hashPIN(pin);
-        System.arraycopy(pinHash, 0, cardData, 35, 16);
+        System.arraycopy(pinHash, 0, cardData, 51, 16);
 
-        // [51-63] reserved zeros
+        // [67-79] reserved zeros
         
         return cardData;
     }
     
     /**
-     * ✅ Parse ENCRYPTED card data (from READ command)
+     * Parse ENCRYPTED card data (from READ command)
      * Requires PIN to decrypt balance/expiry
      * 
-     * @param data 64-byte encrypted card data
+     * @param data 80-byte encrypted card data
      * @param pin PIN for decryption (6-digit string)
      */
     public static CardData parseEncryptedCardData(byte[] data, String pin) throws Exception {
-        if (data.length < 64) {
-            throw new IllegalArgumentException("Card data must be 64 bytes");
+        if (data.length < 80) {
+            throw new IllegalArgumentException("Card data must be 80 bytes");
         }
         if (pin == null || pin.isEmpty()) {
             throw new IllegalArgumentException("PIN required to decrypt data");
         }
         
-        System.out.println("=== DEBUG parseEncryptedCardData (32B ENC) ===");
+        System.out.println("=== DEBUG parseEncryptedCardData (48B ENC) ===");
         
         CardData card = new CardData();
         
         // [0-1] UserID
         card.userId = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
         
-        // [2-33] Encrypted payload (32 bytes) - decrypt with PIN
+        // [2-49] Encrypted payload (48 bytes) - decrypt with PIN
         try {
-            byte[] encryptedBlock = new byte[32];
-            System.arraycopy(data, 2, encryptedBlock, 0, 32);
+            byte[] encryptedBlock = new byte[48];
+            System.arraycopy(data, 2, encryptedBlock, 0, 48);
             byte[] decrypted = decryptSensitivePayload(encryptedBlock, pin);
 
             // Parse fields
@@ -230,38 +237,41 @@ public class CryptoHelper {
             } else {
                 card.fullName = "";
             }
+            // CCCD (ASCII) at [32..43]
+            String cccdStr = new String(decrypted, 32, 12, "US-ASCII").trim();
+            card.cccd = cccdStr;
         } catch (Exception e) {
             throw new Exception("Failed to decrypt card data: " + e.getMessage(), e);
         }
         
-        // [34] PIN Retry
-        card.pinRetry = data[34];
+        // [50] PIN Retry
+        card.pinRetry = data[50];
         
         return card;
     }
     
     /**
-     * ✅ Parse DECRYPTED card data (from VERIFY_PIN response)
+     * Parse DECRYPTED card data (from VERIFY_PIN response)
      * Data [2-17] is already plaintext, no decryption needed
      * 
-     * @param data 64-byte decrypted card data
+     * @param data 80-byte decrypted card data
      * @param pin PIN value (for storing in CardData.pin field)
      */
     public static CardData parseDecryptedCardData(byte[] data, String pin) throws Exception {
-        if (data.length < 64) {
-            throw new IllegalArgumentException("Card data must be 64 bytes");
+        if (data.length < 80) {
+            throw new IllegalArgumentException("Card data must be 80 bytes");
         }
         
-        System.out.println("=== DEBUG parseDecryptedCardData (32B plain) ===");
+        System.out.println("=== DEBUG parseDecryptedCardData (48B plain) ===");
         
         CardData card = new CardData();
         
         // [0-1] UserID
         card.userId = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
         
-        // [2-33] plain payload (32 bytes)
-        byte[] plain = new byte[32];
-        System.arraycopy(data, 2, plain, 0, 32);
+        // [2-49] plain payload (48 bytes)
+        byte[] plain = new byte[48];
+        System.arraycopy(data, 2, plain, 0, 48);
         card.balance = ((plain[0] & 0xFF) << 24) |
                       ((plain[1] & 0xFF) << 16) |
                       ((plain[2] & 0xFF) << 8) |
@@ -272,9 +282,11 @@ public class CryptoHelper {
         card.dobYear = (short) (((plain[8] & 0xFF) << 8) | (plain[9] & 0xFF));
         int nameLen = Math.max(0, Math.min(21, plain[10] & 0xFF));
         card.fullName = nameLen > 0 ? new String(plain, 11, nameLen, "UTF-8").trim() : "";
+        // CCCD
+        card.cccd = new String(plain, 32, 12, "US-ASCII").trim();
         
-        // [34] PIN Retry
-        card.pinRetry = data[34];
+        // [50] PIN Retry
+        card.pinRetry = data[50];
         
         return card;
     }

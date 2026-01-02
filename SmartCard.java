@@ -28,13 +28,13 @@ import javacardx.crypto.*;
 public class SmartCard extends Applet {
     // Data offsets - FIXED
     private static final byte OFFSET_USER_ID = 0;
-    private static final byte OFFSET_BALANCE = 2;           // Start of 32-byte encrypted block
-    private static final byte ENC_BLOCK_LEN = 32;
-    private static final byte OFFSET_PIN_HASH = 35;         // 16-byte PIN hash
-    private static final byte OFFSET_PIN_RETRY = 34;        // Changed from 24 to 34
+    private static final byte OFFSET_BALANCE = 2;           // Start of encrypted block
+    private static final byte ENC_BLOCK_LEN = 48;           // Expanded to 48 bytes (3 AES blocks)
+    private static final byte OFFSET_PIN_RETRY = 50;        // After 48-byte block
+    private static final byte OFFSET_PIN_HASH = 51;         // 16-byte PIN hash follows retry
     // PII stored inside encrypted block; no public offsets.
     
-    private static final short DATA_SIZE = 64;
+    private static final short DATA_SIZE = 80;
     private static final byte MAX_PIN_RETRY = 5;
     private static final byte PIN_HASH_SIZE = 16;
     
@@ -76,7 +76,7 @@ public class SmartCard extends Applet {
 
     public SmartCard() {
         cardData = new byte[DATA_SIZE];
-        tempBuffer = JCSystem.makeTransientByteArray((short) 64, JCSystem.CLEAR_ON_DESELECT);
+        tempBuffer = JCSystem.makeTransientByteArray((short) 80, JCSystem.CLEAR_ON_DESELECT);
         avatarStore = new byte[MAX_AVATAR_SIZE];
         avatarLength = 0;
         
@@ -150,6 +150,7 @@ public class SmartCard extends Applet {
             case INS_AVATAR_CLEAR:
                 handleAvatarClear(apdu);
                 break;
+            // No dedicated CCCD write; CCCD is inside the 48-byte encrypted block
             case INS_ADMIN_UNLOCK:
                 handleAdminUnlock(apdu);
                 break;
@@ -189,13 +190,21 @@ public class SmartCard extends Applet {
         // Copy fields (no public PII; all sensitive inside encrypted 32-byte block)
         // UserID [0-1]
         Util.arrayCopyNonAtomic(buf, ISO7816.OFFSET_CDATA, cardData, (short) 0, (short) 2);
-        // Encrypted block [2-33]
+        // Encrypted block [2-49]
         Util.arrayCopyNonAtomic(buf, (short)(ISO7816.OFFSET_CDATA + OFFSET_BALANCE), cardData, OFFSET_BALANCE, ENC_BLOCK_LEN);
-        // PIN retry [34]
+        // PIN retry [50]
         cardData[OFFSET_PIN_RETRY] = buf[(short)(ISO7816.OFFSET_CDATA + OFFSET_PIN_RETRY)];
-        // PIN hash [35-50]
+        // PIN hash [51-66]
         Util.arrayCopyNonAtomic(buf, (short)(ISO7816.OFFSET_CDATA + OFFSET_PIN_HASH), cardData, OFFSET_PIN_HASH, (short) 16);
-        // Reserved [51-63] remain zeros
+        // Reserved [67-79] remain zeros
+        
+        // ✅ Generate new RSA keypair when creating/resetting card
+        // This ensures each card has unique RSA identity
+        if (isBlankCard || isResetting) {
+            rsaKeyPair.genKeyPair();
+            rsaSignature.init(rsaKeyPair.getPrivate(), Signature.MODE_SIGN);
+        }
+        
         pinVerified = false;
     }
     
@@ -277,13 +286,15 @@ public class SmartCard extends Applet {
             ISOException.throwIt((short)(0x63C0 | cardData[OFFSET_PIN_RETRY]));
         }
         
-        // ✅ RE-ENCRYPT 32-byte sensitive block with NEW PIN
-        // 1. Decrypt with OLD PIN - use tempBuffer[32..63] to avoid collision
+        // ✅ RE-ENCRYPT 48-byte sensitive block with NEW PIN
+        // 1. Decrypt with OLD PIN
+        // tempBuffer[0..31]: Used by deriveAESKeyFromPIN (SHA-256 output)
+        // tempBuffer[32..79]: Safe zone for decrypted data (48 bytes)
         deriveAESKeyFromPIN(buf, oldPinOffset, (short) 6);
         aesCipher.init(aesKey, Cipher.MODE_DECRYPT);
         aesCipher.doFinal(cardData, OFFSET_BALANCE, ENC_BLOCK_LEN, tempBuffer, (short) 32);
 
-        // 2. Encrypt with NEW PIN - read from tempBuffer[32..63], write to card
+        // 2. Encrypt with NEW PIN (key derivation writes to tempBuffer[0..31], safe)
         deriveAESKeyFromPIN(buf, newPinOffset, (short) 6);
         aesCipher.init(aesKey, Cipher.MODE_ENCRYPT);
         aesCipher.doFinal(tempBuffer, (short) 32, ENC_BLOCK_LEN, cardData, OFFSET_BALANCE);
@@ -292,10 +303,10 @@ public class SmartCard extends Applet {
         hashPIN(buf, newPinOffset, (short) 6, tempBuffer, (short) 0);
         Util.arrayCopyNonAtomic(tempBuffer, (short) 0, cardData, OFFSET_PIN_HASH, PIN_HASH_SIZE);
         
-        // ✅ Giữ session hợp lệ với PIN mới
+        // Giữ session hợp lệ với PIN mới
         // aesKey đã được derive từ newPin ở bước 2
         // pinVerified vẫn = true, không cần reset
-        // pinVerified = false; // REMOVED: Keep session valid
+        // pinVerified = false; 
     }
     
     private void handleGetPublicKey(APDU apdu) {
@@ -388,6 +399,7 @@ public class SmartCard extends Applet {
         if (end > MAX_AVATAR_SIZE) {
             ISOException.throwIt(ISO7816.SW_FILE_FULL);
         }
+        // Store avatar in plaintext (non-sensitive); fast and simple
         Util.arrayCopy(buf, ISO7816.OFFSET_CDATA, avatarStore, offset, lc);
         if (end > avatarLength) avatarLength = end;
     }
@@ -399,4 +411,6 @@ public class SmartCard extends Applet {
         Util.arrayFillNonAtomic(avatarStore, (short)0, MAX_AVATAR_SIZE, (byte)0x00);
         avatarLength = 0;
     }
+
+    // CCCD is included within the main encrypted block; no separate handler
 }

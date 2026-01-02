@@ -123,7 +123,9 @@ public class FunctionPanel extends JPanel {
         resetPinBtn.addActionListener(e -> resetPin());
         controlPanel.add(resetPinBtn);
         
-        // Removed 'Sửa Thông Tin' per requirements
+        JButton editInfoBtn = createModernButton("Sửa Thông Tin", new Color(63, 81, 181));
+        editInfoBtn.addActionListener(e -> editMemberInfo());
+        controlPanel.add(editInfoBtn);
 
         JButton viewMembersBtn = createModernButton("Xem Thành Viên (DB)", new Color(0, 121, 107));
         viewMembersBtn.addActionListener(e -> {
@@ -336,6 +338,7 @@ public class FunctionPanel extends JPanel {
             // ID tự động (random hoặc tăng dần)
             newCard.userId = (int) (Math.random() * 65535) + 1;
             newCard.fullName = fullName;
+            newCard.cccd = cccdField.getText().trim();
             newCard.balance = Integer.parseInt(balanceField.getText());
             newCard.expiryDays = (short) Integer.parseInt(expiryField.getText());
             
@@ -378,9 +381,9 @@ public class FunctionPanel extends JPanel {
                     logArea.append("[CẢNH BÁO] Thẻ đã có dữ liệu (UserID: " + existingUserId + ")\n");
                     logArea.append("[BƯỚC 2.6] Xóa dữ liệu cũ (reset thẻ)...\n");
                     
-                    // Write blank data (UserID=0) to reset card
-                    byte[] blankData = new byte[64];
-                    blankData[34] = 5; // Reset PIN retry to 5
+                    // Write blank data (UserID=0) to reset card - 80 bytes layout
+                    byte[] blankData = new byte[80];
+                    blankData[50] = 5; // Reset PIN retry to 5 (offset 50 in new layout)
                     
                     javax.smartcardio.CommandAPDU deleteCmd = 
                         new javax.smartcardio.CommandAPDU(0x00, 0xD0, 0x00, 0x00, blankData);
@@ -416,7 +419,7 @@ public class FunctionPanel extends JPanel {
             logArea.append("PIN: " + pinStr + "\n");
             logArea.append("════════════════════════════\n");
 
-            // Persist to Database
+            // Persist to Database FIRST (so record exists for RSA update)
             try {
                 MembersDao dao = new MembersDao();
                 MemberRecord rec = new MemberRecord();
@@ -443,7 +446,16 @@ public class FunctionPanel extends JPanel {
                 logArea.append("[DB] Lỗi lưu Database: " + dbEx.getMessage() + "\n");
             }
 
-            // Gửi ảnh xuống thẻ theo chunks nếu có
+            // ✅ Đọc RSA public key từ thẻ và lưu vào DB (AFTER upsert so record exists)
+            logArea.append("[BƯỚC 3.5] Đọc RSA Public Key từ thẻ...\n");
+            try {
+                RsaKeyService.registerCardPublicKey(pcsc, newCard.userId);
+                logArea.append("[OK] Đã lưu RSA Public Key vào Database!\n");
+            } catch (Exception rsaEx) {
+                logArea.append("[CẢNH BÁO] Không lấy được RSA: " + rsaEx.getMessage() + "\n");
+            }
+
+            // Gửi ảnh xuống thẻ theo chunks nếu có (thẻ sẽ mã hóa lưu trữ)
             if (imageBytesHolder[0] != null && imageBytesHolder[0].length > 0) {
                 try {
                     logArea.append("[BƯỚC 4] Gửi avatar xuống thẻ (" + imageBytesHolder[0].length + " bytes)...\n");
@@ -469,7 +481,7 @@ public class FunctionPanel extends JPanel {
             }
             
             JOptionPane.showMessageDialog(this, 
-                "✅ Tạo thẻ thành công!\n\n" +
+                "Tạo thẻ thành công!\n\n" +
                 "Họ Tên: " + newCard.fullName + "\n" +
                 "ID: " + newCard.userId + "\n" +
                 "PIN: " + pinStr,
@@ -520,49 +532,62 @@ public class FunctionPanel extends JPanel {
     
     /**
      * Display card info when customer swipes (real-time sync)
+     * Shows decrypted card data after PIN verification
      */
     private void displayCardInfo(CardData card) {
         logArea.setText("");
-        logArea.append("═══ KHÁCH HÀNG QUẸT THẺ ═══\n\n");
-        logArea.append(formatCardInfo(card));
+        logArea.append("═══ KHÁCH HÀNG ĐÃ XÁC THỰC ═══\n\n");
         
-        if (currentRole.equals("ADMIN")) {
-            logArea.append("\nTrạng thái thẻ:\n");
-            // Prefer DB retry counter for consistent view
-            logArea.append("Trạng thái: " + (card.isLocked() ? "Đã khóa" : "Hoạt động") + "\n");
-            // Admin: always show DB-backed full info
-            try {
-                MembersDao dao = new MembersDao();
-                MemberRecord rec = dao.getByUserId(card.userId);
-                if (rec != null) {
-                    logArea.append("\n[DB] Thông tin thành viên:\n");
-                    logArea.append("Họ Tên: " + (rec.fullName != null ? rec.fullName : "") + "\n");
-                    logArea.append("Ngày Sinh: " + (rec.birthdate != null ? rec.birthdate : "") + "\n");
-                    logArea.append("Hạn Tập: " + (rec.expiryDate != null ? rec.expiryDate : "") + "\n");
-                    logArea.append("Số Dư (DB): " + String.format("%,d VND", rec.balanceVnd) + "\n");
-                    // Retry counter (DB)
-                    logArea.append("Retry Counter: " + rec.pinretry + "/5\n");
-                    // RSA key presence
-                    logArea.append("RSA: " + (rec.rsaPublicKey != null && !rec.rsaPublicKey.isEmpty() ? "Có" : "Không") + "\n");
-                    // Transaction history (summary)
-                    if (rec.transactionHistory != null && !rec.transactionHistory.isEmpty()) {
-                        logArea.append("Giao Dịch: " + rec.transactionHistory + "\n");
-                    }
-                    // Created/Updated timestamps
-                    logArea.append("Tạo lúc: " + (rec.createdAt != null ? rec.createdAt : "") + "\n");
-                    logArea.append("Cập nhật: " + (rec.updatedAt != null ? rec.updatedAt : "") + "\n");
-                } else {
-                    logArea.append("\n[DB] Không tìm thấy thành viên trong Database (ID=" + card.userId + ")\n");
-                }
-            } catch (Exception ex) {
-                logArea.append("\n[DB] Lỗi đọc Database: " + ex.getMessage() + "\n");
+        // Lấy thông tin từ DB để bổ sung (CCCD, RSA, etc.)
+        MemberRecord rec = null;
+        try {
+            MembersDao dao = new MembersDao();
+            rec = dao.getByUserId(card.userId);
+        } catch (Exception ignored) {}
+        
+        // ✅ Hiển thị thông tin từ card (đã decrypt sau verify PIN)
+        logArea.append("📇 THÔNG TIN TỪ THẺ:\n");
+        logArea.append("ID: " + card.userId + "\n");
+        logArea.append("Họ Tên: " + (card.fullName != null && !card.fullName.isEmpty() ? card.fullName : "[Không có]") + "\n");
+        logArea.append("Ngày Sinh: " + (card.dobYear > 0 ? card.getDobString() : "[Không có]") + "\n");
+        // CCCD: ưu tiên từ card, fallback từ DB
+        String cccdDisplay = "[Không có]";
+        if (card.cccd != null && !card.cccd.isEmpty()) {
+            cccdDisplay = card.cccd;
+        } else if (rec != null && rec.cccd != null && !rec.cccd.isEmpty()) {
+            cccdDisplay = rec.cccd + " (DB)";
+        }
+        logArea.append("CCCD: " + cccdDisplay + "\n");
+        logArea.append("Số Dư: " + (card.balance >= 0 ? String.format("%,d VND", card.balance) : "[Mã hóa]") + "\n");
+        logArea.append("Hạn Tập: " + (card.expiryDays >= 0 ? card.expiryDays + " ngày" : "[Mã hóa]") + "\n");
+        logArea.append("PIN Retry: " + card.pinRetry + "/5\n");
+        logArea.append("Trạng thái: " + (card.isLocked() ? "🔒 Đã khóa" : "✅ Hoạt động") + "\n");
+        
+        // ✅ Bổ sung thông tin từ DB (RSA, timestamps, v.v.)
+        if (rec != null) {
+            logArea.append("\n📊 THÔNG TIN TỪ DATABASE:\n");
+            // RSA key presence
+            boolean hasRsa = (rec.rsaModulusHex != null && !rec.rsaModulusHex.isEmpty()) &&
+                             (rec.rsaExponentHex != null && !rec.rsaExponentHex.isEmpty());
+            logArea.append("RSA: " + (hasRsa ? "✅ Có" : "❌ Không") + "\n");
+            // Last check-in
+            logArea.append("Check-in gần nhất: " + (rec.lastCheckinDate != null ? rec.lastCheckinDate : "Chưa") + "\n");
+            // Transaction history (summary)
+            if (rec.transactionHistory != null && !rec.transactionHistory.isEmpty()) {
+                logArea.append("Giao Dịch: " + rec.transactionHistory + "\n");
             }
+            // Created/Updated timestamps
+            logArea.append("Tạo lúc: " + (rec.createdAt != null ? rec.createdAt : "") + "\n");
+            logArea.append("Cập nhật: " + (rec.updatedAt != null ? rec.updatedAt : "") + "\n");
+        } else {
+            logArea.append("\n[DB] Không tìm thấy trong Database\n");
         }
         
-        if (card.expiryDays <= 0) {
-            logArea.append("\n THẺ HẾT HẠN!\n");
-        } else if (card.expiryDays <= 7) {
-            logArea.append("\n THẺ SẮP HẾT HẠN!\n");
+        // Cảnh báo hết hạn
+        if (card.expiryDays == 0) {
+            logArea.append("\n⚠️ THẺ HẾT HẠN!\n");
+        } else if (card.expiryDays > 0 && card.expiryDays <= 7) {
+            logArea.append("\n⚠️ THẺ SẮP HẾT HẠN!\n");
         }
     }
     
@@ -905,6 +930,176 @@ public class FunctionPanel extends JPanel {
 
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Sửa thông tin thành viên - Admin only
+     * Flow đơn giản: Quẹt thẻ → User nhập PIN → Admin sửa → Ghi thẻ + DB
+     */
+    private void editMemberInfo() {
+        logArea.setText("");
+        logArea.append("[ADMIN] SỬA THÔNG TIN THÀNH VIÊN\n");
+        logArea.append("════════════════════════════════\n\n");
+        
+        try {
+            // B1: Quẹt thẻ
+            logArea.append("[B1] Đang kết nối thẻ...\n");
+            pcsc.connectFirstPresentOrFirst();
+            
+            javax.smartcardio.CommandAPDU selectCmd = new javax.smartcardio.CommandAPDU(0x00, 0xA4, 0x04, 0x00,
+                    new byte[]{(byte)0x26,(byte)0x12,(byte)0x20,(byte)0x03,(byte)0x03,(byte)0x00});
+            javax.smartcardio.ResponseAPDU selectResp = pcsc.transmit(selectCmd);
+            if ((selectResp.getSW() & 0xFF00) != 0x9000) {
+                logArea.append("[LỖI] Không thể select applet\n");
+                return;
+            }
+            
+            javax.smartcardio.CommandAPDU readCmd = CardHelper.buildReadCommand();
+            javax.smartcardio.ResponseAPDU readResp = pcsc.transmit(readCmd);
+            if ((readResp.getSW() & 0xFF00) != 0x9000) {
+                logArea.append("[LỖI] Không đọc được thẻ\n");
+                return;
+            }
+            CardData cardData = CardHelper.parseReadResponse(readResp.getData());
+            logArea.append("[OK] Đọc thẻ ID=" + cardData.userId + "\n");
+            
+            // B2: User nhập PIN
+            JPasswordField pinField = new JPasswordField();
+            int pinOpt = JOptionPane.showConfirmDialog(this, 
+                new Object[]{"Nhập PIN của thẻ (6 số):", pinField}, 
+                "Xác thực PIN", JOptionPane.OK_CANCEL_OPTION);
+            if (pinOpt != JOptionPane.OK_OPTION) return;
+            
+            String pin = new String(pinField.getPassword());
+            if (!pin.matches("\\d{6}")) {
+                JOptionPane.showMessageDialog(this, "❌ PIN phải là 6 chữ số!");
+                return;
+            }
+            
+            logArea.append("[B2] Xác thực PIN...\n");
+            javax.smartcardio.CommandAPDU verifyCmd = CardHelper.buildVerifyPinCommand(pin);
+            javax.smartcardio.ResponseAPDU verifyResp = pcsc.transmit(verifyCmd);
+            if ((verifyResp.getSW() & 0xFF00) != 0x9000) {
+                String status = CardHelper.parsePinStatus(verifyResp.getSW());
+                JOptionPane.showMessageDialog(this, "❌ " + status);
+                logArea.append("[LỖI] " + status + "\n");
+                return;
+            }
+            logArea.append("[OK] PIN chính xác!\n");
+            
+            // Parse decrypted data từ thẻ
+            CardData decrypted = CryptoHelper.parseDecryptedCardData(verifyResp.getData(), pin);
+            decrypted.userId = cardData.userId;
+            
+            // B3: Hiển thị form sửa với dữ liệu từ thẻ
+            JPanel panel = new JPanel(new GridBagLayout());
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.insets = new Insets(5, 5, 5, 5);
+            gbc.fill = GridBagConstraints.HORIZONTAL;
+            
+            JTextField nameField = new JTextField(decrypted.fullName != null ? decrypted.fullName : "", 20);
+            gbc.gridx = 0; gbc.gridy = 0;
+            panel.add(new JLabel("Họ Tên:"), gbc);
+            gbc.gridx = 1;
+            panel.add(nameField, gbc);
+            
+            gbc.gridx = 0; gbc.gridy = 1;
+            panel.add(new JLabel("Ngày Sinh:"), gbc);
+            JPanel datePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+            JSpinner daySpinner = new JSpinner(new SpinnerNumberModel(decrypted.dobDay > 0 ? decrypted.dobDay : 1, 1, 31, 1));
+            JSpinner monthSpinner = new JSpinner(new SpinnerNumberModel(decrypted.dobMonth > 0 ? decrypted.dobMonth : 1, 1, 12, 1));
+            JSpinner yearSpinner = new JSpinner(new SpinnerNumberModel(decrypted.dobYear > 0 ? decrypted.dobYear : 2000, 1900, 2025, 1));
+            daySpinner.setPreferredSize(new Dimension(50, 25));
+            monthSpinner.setPreferredSize(new Dimension(50, 25));
+            yearSpinner.setPreferredSize(new Dimension(70, 25));
+            datePanel.add(daySpinner);
+            datePanel.add(new JLabel("/"));
+            datePanel.add(monthSpinner);
+            datePanel.add(new JLabel("/"));
+            datePanel.add(yearSpinner);
+            gbc.gridx = 1;
+            panel.add(datePanel, gbc);
+            
+            JTextField cccdField = new JTextField(decrypted.cccd != null ? decrypted.cccd : "", 20);
+            gbc.gridx = 0; gbc.gridy = 2;
+            panel.add(new JLabel("CCCD:"), gbc);
+            gbc.gridx = 1;
+            panel.add(cccdField, gbc);
+            
+            JTextField balanceField = new JTextField(String.valueOf(decrypted.balance), 20);
+            gbc.gridx = 0; gbc.gridy = 3;
+            panel.add(new JLabel("Số Dư (VND):"), gbc);
+            gbc.gridx = 1;
+            panel.add(balanceField, gbc);
+            
+            JTextField expiryField = new JTextField(String.valueOf(decrypted.expiryDays), 20);
+            gbc.gridx = 0; gbc.gridy = 4;
+            panel.add(new JLabel("Hạn Tập (ngày):"), gbc);
+            gbc.gridx = 1;
+            panel.add(expiryField, gbc);
+            
+            int option = JOptionPane.showConfirmDialog(this, panel, "Sửa Thông Tin - ID: " + decrypted.userId, 
+                                                       JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (option != JOptionPane.OK_OPTION) {
+                logArea.append("[HỦY]\n");
+                return;
+            }
+            
+            // Parse input
+            String newName = nameField.getText().trim();
+            String newCccd = cccdField.getText().trim();
+            int newBalance = Integer.parseInt(balanceField.getText().trim());
+            short newExpiry = (short) Integer.parseInt(expiryField.getText().trim());
+            byte newDobDay = (byte) ((Integer) daySpinner.getValue()).intValue();
+            byte newDobMonth = (byte) ((Integer) monthSpinner.getValue()).intValue();
+            short newDobYear = (short) ((Integer) yearSpinner.getValue()).intValue();
+            
+            // B4: Ghi xuống thẻ
+            logArea.append("[B3] Ghi dữ liệu mới xuống thẻ...\n");
+            CardData newData = new CardData();
+            newData.userId = decrypted.userId;
+            newData.fullName = newName;
+            newData.balance = newBalance;
+            newData.expiryDays = newExpiry;
+            newData.dobDay = newDobDay;
+            newData.dobMonth = newDobMonth;
+            newData.dobYear = newDobYear;
+            newData.cccd = newCccd;
+            newData.pin = pin;
+            newData.pinRetry = 5;
+            
+            javax.smartcardio.CommandAPDU writeCmd = CardHelper.buildWriteCommand(newData);
+            javax.smartcardio.ResponseAPDU writeResp = pcsc.transmit(writeCmd);
+            if ((writeResp.getSW() & 0xFF00) != 0x9000) {
+                logArea.append("[LỖI] Ghi thẻ thất bại\n");
+                return;
+            }
+            logArea.append("[OK] Ghi thẻ thành công!\n");
+            
+            // B5: Cập nhật DB
+            logArea.append("[B4] Cập nhật Database...\n");
+            MembersDao dao = new MembersDao();
+            MemberRecord record = dao.getByUserId(decrypted.userId);
+            if (record == null) {
+                record = new MemberRecord();
+                record.id = decrypted.userId;
+            }
+            record.fullName = newName;
+            record.balanceVnd = newBalance;
+            record.birthdate = java.time.LocalDate.of(newDobYear, newDobMonth, newDobDay);
+            record.expiryDate = java.time.LocalDate.now().plusDays(newExpiry);
+            record.cccd = newCccd;
+            dao.upsert(record);
+            logArea.append("[OK] Cập nhật DB thành công!\n");
+            
+            logArea.append("\n✅ SỬA THÔNG TIN THÀNH CÔNG!\n");
+            JOptionPane.showMessageDialog(this, "✅ Sửa thông tin thành công!");
+            
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "❌ Số dư hoặc hạn tập không hợp lệ!");
+        } catch (Exception ex) {
+            logArea.append("[LỖI] " + ex.getMessage() + "\n");
         }
     }
 }

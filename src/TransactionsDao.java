@@ -20,14 +20,14 @@ public class TransactionsDao {
         }
         Connection conn = DriverManager.getConnection(dbUrl);
         try (Statement st = conn.createStatement()) {
-            st.executeUpdate("CREATE TABLE IF NOT EXISTS transactions (\n" +
+                st.executeUpdate("CREATE TABLE IF NOT EXISTS transactions (\n" +
                     "  id INTEGER PRIMARY KEY AUTOINCREMENT,\n" +
                     "  member_id INTEGER NOT NULL,\n" +
                     "  type TEXT NOT NULL,\n" +
                     "  amount INTEGER NOT NULL,\n" +
                     "  items TEXT,\n" +
                     "  payment_method TEXT,\n" +
-                    "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,\n" +
+                    "  created_at TEXT DEFAULT (datetime('now','localtime')),\n" +
                     "  FOREIGN KEY(member_id) REFERENCES members(id)\n" +
                     ")");
             st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_transactions_member ON transactions(member_id)");
@@ -36,7 +36,7 @@ public class TransactionsDao {
     }
 
     public void logTopup(int memberId, int amount, String paymentMethod) throws SQLException {
-        String sql = "INSERT INTO transactions (member_id, type, amount, items, payment_method, created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)";
+        String sql = "INSERT INTO transactions (member_id, type, amount, items, payment_method, created_at) VALUES (?,?,?,?,?,datetime('now','localtime'))";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, memberId);
             ps.setString(2, "TOPUP");
@@ -49,7 +49,7 @@ public class TransactionsDao {
 
     public void logPurchase(int memberId, List<CardEventBroadcaster.CartItem> items, int totalPrice) throws SQLException {
         String itemsJson = toItemsJson(items);
-        String sql = "INSERT INTO transactions (member_id, type, amount, items, payment_method, created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)";
+        String sql = "INSERT INTO transactions (member_id, type, amount, items, payment_method, created_at) VALUES (?,?,?,?,?,datetime('now','localtime'))";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, memberId);
             ps.setString(2, "PURCHASE");
@@ -61,7 +61,7 @@ public class TransactionsDao {
     }
 
     public void logRenew(int memberId, int daysAdded, int price) throws SQLException {
-        String sql = "INSERT INTO transactions (member_id, type, amount, items, payment_method, created_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)";
+        String sql = "INSERT INTO transactions (member_id, type, amount, items, payment_method, created_at) VALUES (?,?,?,?,?,datetime('now','localtime'))";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, memberId);
             ps.setString(2, "RENEW");

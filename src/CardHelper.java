@@ -35,7 +35,7 @@ public class CardHelper {
      * ISO 7816-4 READ BINARY command
      */
     public static CommandAPDU buildReadCommand() {
-        return new CommandAPDU(0x00, INS_READ, 0x00, 0x00, 64);
+        return new CommandAPDU(0x00, INS_READ, 0x00, 0x00, 80);
     }
 
     /**
@@ -59,7 +59,8 @@ public class CardHelper {
             card.dobDay,
             card.dobMonth,
             card.dobYear,
-            card.fullName != null ? card.fullName : ""
+            card.fullName != null ? card.fullName : "",
+            card.cccd != null ? card.cccd : ""
         );
         
         return new CommandAPDU(0x00, INS_WRITE, 0x00, 0x00, data);
@@ -75,7 +76,7 @@ public class CardHelper {
         if (pinData.length != 6) {
             throw new IllegalArgumentException("PIN must be exactly 6 digits");
         }
-        return new CommandAPDU(0x00, INS_VERIFY_PIN, 0x00, 0x00, pinData, 64);
+        return new CommandAPDU(0x00, INS_VERIFY_PIN, 0x00, 0x00, pinData, 80);
     }
     
     /**
@@ -152,6 +153,8 @@ public class CardHelper {
         return new CommandAPDU(0x00, INS_AVATAR_WRITE, p1, p2, chunk);
     }
 
+    // No CCCD write APDU: CCCD is inside the main encrypted block
+
     /**
      * Parse response from READ command (64 bytes) - PII-SAFE VIEW
      * 
@@ -162,8 +165,8 @@ public class CardHelper {
      * Use parseReadResponse(data, pin) to decrypt balance/expiry only.
      */
     public static CardData parseReadResponse(byte[] data) throws Exception {
-        if (data == null || data.length != 64) {
-            throw new IllegalArgumentException("Invalid data length: expected 64 bytes");
+        if (data == null || data.length != 80) {
+            throw new IllegalArgumentException("Invalid data length: expected 80 bytes");
         }
         
         CardData card = new CardData();
@@ -171,20 +174,19 @@ public class CardHelper {
         // [0-1] User ID (unencrypted)
         card.userId = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
         
-        // [2-17] Encrypted balance/expiry - skip, set to -1
+        // Encrypted area - skip, set to -1
         card.balance = -1;
         card.expiryDays = -1;
         
-        // [18-33] PIN hash - skip (admin doesn't see this)
-        
-        // [34] PIN retry counter (unencrypted)
-        card.pinRetry = data[34];
+        // [50] PIN retry counter (unencrypted)
+        card.pinRetry = data[50];
         
         // PII removed: do not expose DOB or FullName from card
         card.dobDay = 0;
         card.dobMonth = 0;
         card.dobYear = 0;
         card.fullName = "";
+        card.cccd = "";
         
         card.pin = null; // Admin doesn't know PIN
         return card;
@@ -213,7 +215,7 @@ public class CardHelper {
         if (sw == 0x9000) {
             // PIN correct - card returns 64 bytes of DECRYPTED data
             byte[] data = response.getData();
-            if (data == null || data.length < 64) {
+            if (data == null || data.length < 80) {
                 throw new Exception("Invalid response data length: " + (data != null ? data.length : 0));
             }
             // ✅ Use parseDecryptedCardData - data is already plaintext from card

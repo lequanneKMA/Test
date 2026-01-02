@@ -19,4 +19,5 @@ public class MemberRecord {
     public String updatedAt;
     public String cccd;
     public byte[] avatarData;
+    public String lastCheckinDate;
 }

@@ -4,7 +4,7 @@ public class RsaQuickTest {
             PcscClient pcsc = new PcscClient();
             pcsc.connectFirstPresentOrFirst();
 
-            // Select applet (same AID used in CustomerWindow)
+            // Chọn applet y hệt ở khách hàng
             javax.smartcardio.CommandAPDU selectCmd = new javax.smartcardio.CommandAPDU(
                 0x00, 0xA4, 0x04, 0x00,
                 new byte[]{(byte)0x26,(byte)0x12,(byte)0x20,(byte)0x03,(byte)0x03,(byte)0x00}
@@ -15,7 +15,7 @@ public class RsaQuickTest {
                 return;
             }
 
-            // Read card to get userId
+            // Đọc thẻ để lấy userId
             javax.smartcardio.ResponseAPDU readResp = pcsc.transmit(CardHelper.buildReadCommand());
             if ((readResp.getSW() & 0xFF00) == 0x6C00) {
                 int correctLE = readResp.getSW2();
@@ -29,16 +29,13 @@ public class RsaQuickTest {
             int userId = card.userId;
             System.out.println("[INFO] UserID on card: " + userId);
 
-            // Register public key to DB
+            // Đăng ký public key vào DB
             RsaKeyService.registerCardPublicKey(pcsc, userId);
             System.out.println("[OK] Stored RSA public key (modulus/exponent) for user " + userId + " into DB.");
 
             // Verify challenge-response
             boolean ok = RsaKeyService.verifyCardLogin(pcsc, userId);
-            // ... (Đoạn code trên của bạn giữ nguyên) ...
             System.out.println("[RESULT] RSA verify: " + (ok ? "SUCCESS" : "FAIL"));
-
-            // ... (Đoạn trên giữ nguyên) ...
 
 // =================================================================
 // BẮT ĐẦU ĐOẠN TEST BỔ SUNG: GIẢ LẬP HACKER (TAMPER TEST)

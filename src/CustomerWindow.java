@@ -15,6 +15,7 @@ public class CustomerWindow extends JFrame {
     private final JButton changePinBtn;
     private final JButton purchaseBtn;
     private final JButton topupBtn;
+    private final JButton checkinBtn;
     private final JLabel statusLabel;
     private final PcscClient pcsc;
     private CardData currentCard;
@@ -92,7 +93,7 @@ public class CustomerWindow extends JFrame {
 
         // Other buttons grid - improved layout
         JPanel buttonRow = new JPanel();
-        buttonRow.setLayout(new GridLayout(2, 3, 8, 8));
+        buttonRow.setLayout(new GridLayout(3, 3, 8, 8));
         buttonRow.setBackground(new Color(248, 250, 252));
         buttonRow.setMaximumSize(new Dimension(650, 100));
 
@@ -115,6 +116,11 @@ public class CustomerWindow extends JFrame {
         topupBtn = createModernButton("Nạp Tiền", new Color(255, 152, 0));
         topupBtn.addActionListener(e -> topupBalance());
         buttonRow.add(topupBtn);
+
+        // Check-in button: trừ 1 ngày/lần/ngày
+        checkinBtn = createModernButton("Check-in", new Color(0, 150, 136));
+        checkinBtn.addActionListener(e -> checkIn());
+        buttonRow.add(checkinBtn);
 
         JButton logoutBtn = createModernButton("Thoát", new Color(120, 120, 120));
         logoutBtn.addActionListener(e -> {
@@ -237,6 +243,7 @@ public class CustomerWindow extends JFrame {
         changePinBtn.setEnabled(false);
         purchaseBtn.setEnabled(false);
         topupBtn.setEnabled(false);
+        checkinBtn.setEnabled(false);
     }
 
     private void swipeCard() {
@@ -326,6 +333,7 @@ public class CustomerWindow extends JFrame {
                     changePinBtn.setEnabled(true);
                     purchaseBtn.setEnabled(true);
                     topupBtn.setEnabled(true);
+                    checkinBtn.setEnabled(true);
                 });
 
             } catch (Exception ex) {
@@ -336,6 +344,64 @@ public class CustomerWindow extends JFrame {
                 swipeBtn.setEnabled(true);
             }
         }).start();
+    }
+
+    private void checkIn() {
+        if (currentCard == null || currentCard.userId <= 0) {
+            JOptionPane.showMessageDialog(this, "Vui lòng quẹt thẻ trước");
+            return;
+        }
+        try {
+            MembersDao dao = new MembersDao();
+            MemberRecord rec = dao.getByUserId(currentCard.userId);
+            java.time.LocalDate today = java.time.LocalDate.now();
+            if (rec != null && rec.lastCheckinDate != null) {
+                try {
+                    java.time.LocalDate last = java.time.LocalDate.parse(rec.lastCheckinDate);
+                    if (last != null && last.equals(today)) {
+                        JOptionPane.showMessageDialog(this, "Hôm nay đã check-in. Không trừ ngày.");
+                        return;
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            if (currentCard.expiryDays <= 0) {
+                JOptionPane.showMessageDialog(this, "Thẻ đã hết hạn. Không thể check-in.");
+                return;
+            }
+
+            // Xác thực PIN để ghi thẻ an toàn
+            if (!verifyPinDialog()) {
+                infoArea.append("[HỦY] Check-in: Không thể xác thực PIN\n");
+                return;
+            }
+
+            // Trừ 1 ngày trên thẻ (expiryDays)
+            currentCard.expiryDays = (short)(currentCard.expiryDays - 1);
+            javax.smartcardio.ResponseAPDU writeResp = pcsc.transmit(CardHelper.buildWriteCommand(currentCard));
+            if ((writeResp.getSW() & 0xFF00) != 0x9000) {
+                infoArea.append("[LỖI] Ghi thẻ check-in thất bại\n");
+                JOptionPane.showMessageDialog(this, "Lỗi ghi thẻ khi check-in");
+                // Rollback in memory
+                currentCard.expiryDays = (short)(currentCard.expiryDays + 1);
+                return;
+            }
+
+            // Cập nhật DB: giảm expiry_date 1 ngày và lưu last_checkin_date
+            java.time.LocalDate newExpiry = (rec != null && rec.expiryDate != null) ? rec.expiryDate.minusDays(1) : null;
+            try {
+                dao.updateExpiryAndCheckin(currentCard.userId, newExpiry, today.toString());
+                infoArea.append("[DB] Đã cập nhật check-in hôm nay\n");
+            } catch (Exception dbEx) {
+                infoArea.append("[DB] Lỗi cập nhật check-in: " + dbEx.getMessage() + "\n");
+            }
+
+            // Hiển thị
+            infoArea.append("✅ Check-in thành công. Đã trừ 1 ngày. Còn: " + currentCard.expiryDays + " ngày\n");
+            CardEventBroadcaster.getInstance().broadcastCardSwipe(currentCard);
+        } catch (Exception ex) {
+            infoArea.append("[LỖI] " + ex.getMessage() + "\n");
+        }
     }
 
     private void displayCardInfo() {
@@ -381,13 +447,13 @@ public class CustomerWindow extends JFrame {
         if (currentCard.dobYear > 0) {
             info.append("Ngày Sinh: ").append(currentCard.getDobString()).append("\n");
         }
+        // CCCD từ thẻ (đã decrypt)
+        if (currentCard.cccd != null && !currentCard.cccd.isEmpty()) {
+            info.append("CCCD: ").append(currentCard.cccd).append("\n");
+        }
         short retriesToShow = currentCard.pinRetry;
         MemberRecord rec = null;
         try { rec = new MembersDao().getByUserId(currentCard.userId); } catch (Exception ignored) {}
-        // Hiển thị CCCD từ DB nếu có
-        if (rec != null && rec.cccd != null && !rec.cccd.isEmpty()) {
-            info.append("CCCD: ").append(rec.cccd).append("\n");
-        }
         if (rec != null) {
             retriesToShow = rec.pinretry;
         }
@@ -418,7 +484,7 @@ public class CustomerWindow extends JFrame {
             return;
         }
 
-        // 💰 Bảng giá gói tập
+        // Bảng giá gói tập
         String[] packages = {
             "1 Ngày - 50,000 VND",
             "1 Tuần - 300,000 VND",
@@ -475,17 +541,17 @@ public class CustomerWindow extends JFrame {
         int confirm = JOptionPane.showConfirmDialog(
             this, 
             "Xác nhận gia hạn:\n" +
-            "📦 Gói: " + selected + "\n" +
-            "💰 Giá: " + String.format("%,d VND", price) + "\n" +
-            "📅 Thêm: " + daysToAdd + " ngày\n" +
-            "💳 Số dư sau: " + String.format("%,d VND", currentCard.balance - price), 
+            "Gói: " + selected + "\n" +
+            "Giá: " + String.format("%,d VND", price) + "\n" +
+            "Thêm: " + daysToAdd + " ngày\n" +
+            "Số dư sau: " + String.format("%,d VND", currentCard.balance - price), 
             "Xác Nhận", 
             JOptionPane.YES_NO_OPTION
         );
         
         if (confirm != JOptionPane.YES_OPTION) return;
 
-        // 🔐 Xác thực PIN trước khi ghi
+        // Xác thực PIN trước khi ghi
         if (!verifyPinDialog()) {
             infoArea.append("[HỦY] Không thể xác thực PIN\n");
             return;
@@ -504,10 +570,10 @@ public class CustomerWindow extends JFrame {
 
             if ((writeResp.getSW() & 0xFF00) == 0x9000) {
                 infoArea.append("[OK] Gia hạn thành công!\n");
-                infoArea.append("💰 Đã trừ: " + String.format("%,d VND", price) + "\n");
-                infoArea.append("📅 Gia hạn: +" + daysToAdd + " ngày\n");
-                infoArea.append("📆 Hạn mới: " + currentCard.expiryDays + " ngày\n");
-                infoArea.append("💳 Số dư còn: " + String.format("%,d VND", currentCard.balance) + "\n");
+                infoArea.append("Đã trừ: " + String.format("%,d VND", price) + "\n");
+                infoArea.append("Gia hạn: +" + daysToAdd + " ngày\n");
+                infoArea.append("Hạn mới: " + currentCard.expiryDays + " ngày\n");
+                infoArea.append("Số dư còn: " + String.format("%,d VND", currentCard.balance) + "\n");
                 displayCardInfo();
           
                 // �🔄 Broadcast để Staff thấy thay đổi
@@ -523,6 +589,12 @@ public class CustomerWindow extends JFrame {
                     infoArea.append("[DB] Đã ghi gia hạn vào Database\n");
                 } catch (Exception dbEx) {
                     infoArea.append("[DB] Lỗi ghi gia hạn: " + dbEx.getMessage() + "\n");
+                    // Fail-safe: ghi log khẩn cấp nếu DB lỗi
+                    try {
+                        FileLogger.logRenew(currentCard.userId, price, currentCard.balance, daysToAdd);
+                        infoArea.append("[LOG] Đã lưu emergency log (RENEW) để đối soát.\n");
+                        JOptionPane.showMessageDialog(this, "⚠️ Giao dịch đã ghi lên thẻ nhưng DB lỗi. Đã lưu log khẩn cấp!", "Cảnh báo", JOptionPane.WARNING_MESSAGE);
+                    } catch (Exception ignored) {}
                 }
             } else {
                 infoArea.append("[LỖI] Gia hạn thất bại\n");
@@ -600,7 +672,7 @@ public class CustomerWindow extends JFrame {
         JPasswordField newPinField = new JPasswordField();
         opt = JOptionPane.showConfirmDialog(
             this,
-            new Object[]{"🔑 PIN mới (6 chữ số):", newPinField},
+            new Object[]{"PIN mới (6 chữ số):", newPinField},
             "Đổi PIN",
             JOptionPane.OK_CANCEL_OPTION
         );
@@ -615,6 +687,12 @@ public class CustomerWindow extends JFrame {
             newPin = pinStr;
         } catch (Exception e) {
             JOptionPane.showMessageDialog(this, "❌ PIN mới phải là 6 chữ số (000000-999999)");
+            return;
+        }
+
+        // ✅ Kiểm tra PIN mới không được trùng PIN cũ
+        if (newPin.equals(oldPin)) {
+            JOptionPane.showMessageDialog(this, "❌ PIN mới không được trùng với PIN cũ!");
             return;
         }
 
@@ -809,7 +887,7 @@ public class CustomerWindow extends JFrame {
 
         // Panel dưới: tổng tiền + thanh toán
         JPanel bottomPanel = new JPanel(new BorderLayout());
-        JLabel totalLabel = new JLabel("💰 Tổng tiền: 0 VND");
+        JLabel totalLabel = new JLabel("Tổng tiền: 0 VND");
         totalLabel.setFont(new Font("Arial", Font.BOLD, 14));
 
         JButton checkoutBtn = new JButton("THANH TOÁN");
@@ -826,8 +904,8 @@ public class CustomerWindow extends JFrame {
 
             if (currentCard.balance < totalPrice) {
                 JOptionPane.showMessageDialog(shopFrame, 
-                    "❌ Số dư không đủ!\n💰 Cần: " + String.format("%,d VND", totalPrice) + 
-                    "\n💳 Có: " + String.format("%,d VND", currentCard.balance));
+                    "❌ Số dư không đủ!\nCần: " + String.format("%,d VND", totalPrice) + 
+                    "\nCó: " + String.format("%,d VND", currentCard.balance));
                 return;
             }
 
@@ -839,7 +917,7 @@ public class CustomerWindow extends JFrame {
                     .append(" = ").append(String.format("%,d", item.quantity * item.price)).append("₫\n");
             }
             bill.append("---\n");
-            bill.append("💰 TỔNG CỘNG: " + String.format("%,d", totalPrice) + "₫\n\n");
+            bill.append("TỔNG CỘNG: " + String.format("%,d", totalPrice) + "₫\n\n");
             bill.append("Vui lòng chờ nhân viên xác nhận...");
 
             infoArea.append("\n[CHỜ XÁC NHẬN] Gửi đơn hàng:\n");
@@ -907,11 +985,16 @@ public class CustomerWindow extends JFrame {
                                 infoArea.append("[DB] Đã ghi giao dịch vào Database\n");
                             } catch (Exception dbEx) {
                                 infoArea.append("[DB] Lỗi ghi giao dịch: " + dbEx.getMessage() + "\n");
+                                try {
+                                    FileLogger.logPurchase(currentCard.userId, finalTotalPrice, currentCard.balance, null);
+                                    infoArea.append("[LOG] Đã lưu emergency log (PURCHASE) để đối soát.\n");
+                                    JOptionPane.showMessageDialog(this, "⚠️ Giao dịch đã ghi lên thẻ nhưng DB lỗi. Đã lưu log khẩn cấp!", "Cảnh báo", JOptionPane.WARNING_MESSAGE);
+                                } catch (Exception ignored) {}
                             }
                             
                             JOptionPane.showMessageDialog(
                                 shopFrame, 
-                                "✅ Thanh toán thành công!\n💰 Số dư còn: " + String.format("%,d VND", currentCard.balance), 
+                                "✅ Thanh toán thành công!\nSố dư còn: " + String.format("%,d VND", currentCard.balance), 
                                 "Hoàn Tất", 
                                 JOptionPane.INFORMATION_MESSAGE
                             );
@@ -947,7 +1030,7 @@ public class CustomerWindow extends JFrame {
                 cartModel.addElement(item.name + " x" + item.quantity + " = " + String.format("%,d", item.quantity * item.price) + "₫");
                 total += item.quantity * item.price;
             }
-            totalLabel.setText("💰 Tổng tiền: " + String.format("%,d VND", total));
+            totalLabel.setText("Tổng tiền: " + String.format("%,d VND", total));
         });
         updateTimer.start();
 
@@ -994,7 +1077,7 @@ public class CustomerWindow extends JFrame {
         infoArea.append("\n[TIẾN HÀNH] Nạp " + String.format("%,d VND", amount) + "...\n");
         
         // 💳 Chọn phương thức thanh toán
-        String[] methods = {"💵 Tiền Mặt", "📱 QR Code"};
+        String[] methods = {"Tiền Mặt", "QR Code"};
         String paymentMethod = (String) JOptionPane.showInputDialog(
             this, 
             "Chọn phương thức thanh toán:", 
@@ -1023,7 +1106,7 @@ public class CustomerWindow extends JFrame {
                     JOptionPane.showMessageDialog(
                         this, 
                         qrIcon, 
-                        "📱 Quét Mã QR - Số tiền: " + String.format("%,d VND", amount), 
+                        "Quét Mã QR - Số tiền: " + String.format("%,d VND", amount), 
                         JOptionPane.PLAIN_MESSAGE
                     );
                     infoArea.append("[QR] Đã hiển thị mã QR cho khách hàng\n");
@@ -1099,6 +1182,11 @@ public class CustomerWindow extends JFrame {
                     infoArea.append("[DB] Đã ghi giao dịch vào Database\n");
                 } catch (Exception dbEx) {
                     infoArea.append("[DB] Lỗi ghi giao dịch: " + dbEx.getMessage() + "\n");
+                    try {
+                        FileLogger.logTopup(currentCard.userId, finalAmount, currentCard.balance);
+                        infoArea.append("[LOG] Đã lưu emergency log (TOPUP) để đối soát.\n");
+                        JOptionPane.showMessageDialog(this, "⚠️ Giao dịch đã ghi lên thẻ nhưng DB lỗi. Đã lưu log khẩn cấp!", "Cảnh báo", JOptionPane.WARNING_MESSAGE);
+                    } catch (Exception ignored) {}
                 }
             } else {
                 infoArea.append("[LỖI] Nạp tiền thất bại (SW: " +

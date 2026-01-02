@@ -41,8 +41,9 @@ public class MembersDao {
                     "  pinretry INTEGER DEFAULT 5,\n" +
                         "  cccd TEXT,\n" +
                         "  avatar_data BLOB,\n" +
-                    "  created_at TEXT DEFAULT CURRENT_TIMESTAMP,\n" +
-                    "  updated_at TEXT DEFAULT CURRENT_TIMESTAMP\n" +
+                        "  last_checkin_date TEXT,\n" +
+                    "  created_at TEXT DEFAULT (datetime('now','localtime')),\n" +
+                    "  updated_at TEXT DEFAULT (datetime('now','localtime'))\n" +
                     ")");
             st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_members_card_uid ON members(card_uid)");
                 // Attempt to add columns if older DB exists (ignore errors if already present)
@@ -50,12 +51,13 @@ public class MembersDao {
                 try { st.executeUpdate("ALTER TABLE members ADD COLUMN avatar_data BLOB"); } catch (Exception ignored) {}
                 try { st.executeUpdate("ALTER TABLE members ADD COLUMN rsa_modulus TEXT"); } catch (Exception ignored) {}
                 try { st.executeUpdate("ALTER TABLE members ADD COLUMN rsa_exponent TEXT"); } catch (Exception ignored) {}
+                try { st.executeUpdate("ALTER TABLE members ADD COLUMN last_checkin_date TEXT"); } catch (Exception ignored) {}
         }
         return conn;
     }
 
     public MemberRecord getByUserId(int userId) throws SQLException {
-        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, rsa_modulus, rsa_exponent, transaction_history, pinretry, cccd, avatar_data, created_at, updated_at " +
+        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, rsa_modulus, rsa_exponent, transaction_history, pinretry, cccd, avatar_data, last_checkin_date, created_at, updated_at " +
                      "FROM members WHERE id = ?";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, userId);
@@ -67,7 +69,7 @@ public class MembersDao {
     }
 
     public List<MemberRecord> getAll() throws SQLException {
-        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, rsa_modulus, rsa_exponent, transaction_history, pinretry, cccd, avatar_data, created_at, updated_at FROM members ORDER BY id";
+        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, rsa_modulus, rsa_exponent, transaction_history, pinretry, cccd, avatar_data, last_checkin_date, created_at, updated_at FROM members ORDER BY id";
         List<MemberRecord> list = new ArrayList<>();
         try (Connection conn = getConnection(); Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
             while (rs.next()) list.add(map(rs));
@@ -76,12 +78,12 @@ public class MembersDao {
     }
 
     public void upsert(MemberRecord m) throws SQLException {
-        String sql = "INSERT INTO members (id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, transaction_history, pinretry, cccd, avatar_data, updated_at) " +
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) " +
+        String sql = "INSERT INTO members (id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, transaction_history, pinretry, cccd, avatar_data, created_at, updated_at) " +
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime')) " +
                      "ON CONFLICT(id) DO UPDATE SET " +
                      "full_name=excluded.full_name, balance_vnd=excluded.balance_vnd, birthdate=excluded.birthdate, " +
                      "expiry_date=excluded.expiry_date, card_uid=excluded.card_uid, rsa_public_key=excluded.rsa_public_key, " +
-                     "transaction_history=excluded.transaction_history, pinretry=excluded.pinretry, cccd=excluded.cccd, avatar_data=excluded.avatar_data, updated_at=CURRENT_TIMESTAMP";
+                 "transaction_history=excluded.transaction_history, pinretry=excluded.pinretry, cccd=excluded.cccd, avatar_data=excluded.avatar_data, updated_at=datetime('now','localtime')";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, m.id);
             ps.setString(2, m.fullName);
@@ -99,7 +101,7 @@ public class MembersDao {
     }
 
     public void updateBalanceAndExpiry(int memberId, int newBalance, LocalDate newExpiryDate) throws SQLException {
-        String sql = "UPDATE members SET balance_vnd = ?, expiry_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+        String sql = "UPDATE members SET balance_vnd = ?, expiry_date = ?, updated_at = datetime('now','localtime') WHERE id = ?";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, newBalance);
             ps.setString(2, newExpiryDate != null ? newExpiryDate.toString() : null);
@@ -109,7 +111,7 @@ public class MembersDao {
     }
 
     public void updatePinRetry(int memberId, short retries) throws SQLException {
-        String sql = "UPDATE members SET pinretry = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+        String sql = "UPDATE members SET pinretry = ?, updated_at = datetime('now','localtime') WHERE id = ?";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setShort(1, retries);
             ps.setInt(2, memberId);
@@ -130,6 +132,7 @@ public class MembersDao {
         m.pinretry = rs.getShort("pinretry");
         m.createdAt = rs.getString("created_at");
         m.updatedAt = rs.getString("updated_at");
+        try { m.lastCheckinDate = rs.getString("last_checkin_date"); } catch (SQLException ignored) { m.lastCheckinDate = null; }
             m.cccd = rs.getString("cccd");
             try { m.avatarData = rs.getBytes("avatar_data"); } catch (SQLException ignored) { m.avatarData = null; }
         // Parse dates if present
@@ -141,11 +144,21 @@ public class MembersDao {
     }
 
     public void updateRsaPublicKeyHex(int userId, String modulusHex, String exponentHex) throws SQLException {
-        String sql = "UPDATE members SET rsa_modulus = ?, rsa_exponent = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+        String sql = "UPDATE members SET rsa_modulus = ?, rsa_exponent = ?, updated_at = datetime('now','localtime') WHERE id = ?";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, modulusHex);
             ps.setString(2, exponentHex);
             ps.setInt(3, userId);
+            ps.executeUpdate();
+        }
+    }
+
+    public void updateExpiryAndCheckin(int memberId, LocalDate newExpiryDate, String todayStr) throws SQLException {
+        String sql = "UPDATE members SET expiry_date = ?, last_checkin_date = ?, updated_at = datetime('now','localtime') WHERE id = ?";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, newExpiryDate != null ? newExpiryDate.toString() : null);
+            ps.setString(2, todayStr);
+            ps.setInt(3, memberId);
             ps.executeUpdate();
         }
     }

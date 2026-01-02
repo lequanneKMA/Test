@@ -15,6 +15,7 @@ public class CardData {
     // Card identification
     public int userId;
     public String fullName;
+    public String cccd;
     
     // Encrypted data
     public int balance;
@@ -35,6 +36,7 @@ public class CardData {
     public CardData() {
         this.pinRetry = MAX_PIN_RETRY;
         this.fullName = "";
+        this.cccd = "";
     }
 
     public CardData(int userId, int balance, short expiryDays, String pin, byte pinRetry, 
@@ -48,12 +50,14 @@ public class CardData {
         this.dobMonth = dobMonth;
         this.dobYear = dobYear;
         this.fullName = "";
+        this.cccd = "";
     }
     
     public CardData(int userId, String fullName, int balance, short expiryDays, 
                    String pin, byte pinRetry, byte dobDay, byte dobMonth, short dobYear) {
         this(userId, balance, expiryDays, pin, pinRetry, dobDay, dobMonth, dobYear);
         this.fullName = fullName != null ? fullName : "";
+        this.cccd = "";
     }
 
     public String getDobString() {
