@@ -11,6 +11,8 @@ public class MemberRecord {
     public LocalDate expiryDate;
     public String cardUid;
     public String rsaPublicKey;
+    public String rsaModulusHex;
+    public String rsaExponentHex;
     public String transactionHistory;
     public short pinretry;
     public String createdAt;

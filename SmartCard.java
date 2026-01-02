@@ -311,6 +311,8 @@ public class SmartCard extends Applet {
         offset += exponentLen;
         
         apdu.setOutgoingAndSend((short) 0, offset);
+        // Hint GC to collect any temporary objects if needed
+        JCSystem.requestObjectDeletion();
     }
     
     private void handleSignChallenge(APDU apdu) {
@@ -323,6 +325,8 @@ public class SmartCard extends Applet {
         
         rsaSignature.sign(buf, ISO7816.OFFSET_CDATA, lc, buf, (short) 0);
         apdu.setOutgoingAndSend((short) 0, (short) 128);
+        // Hint GC to collect any temporary objects if needed
+        JCSystem.requestObjectDeletion();
     }
     
     /**

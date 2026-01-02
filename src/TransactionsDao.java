@@ -1,5 +1,5 @@
 import java.sql.*;
-import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 public class TransactionsDao {
@@ -70,6 +70,25 @@ public class TransactionsDao {
             ps.setString(5, null);
             ps.executeUpdate();
         }
+    }
+
+    public List<TransactionRecord> getAll() throws SQLException {
+        String sql = "SELECT id, member_id, type, amount, items, payment_method, created_at FROM transactions ORDER BY id DESC";
+        List<TransactionRecord> list = new ArrayList<>();
+        try (Connection conn = getConnection(); Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                TransactionRecord t = new TransactionRecord();
+                t.id = rs.getInt("id");
+                t.memberId = rs.getInt("member_id");
+                t.type = rs.getString("type");
+                t.amount = rs.getInt("amount");
+                t.items = rs.getString("items");
+                t.paymentMethod = rs.getString("payment_method");
+                t.createdAt = rs.getString("created_at");
+                list.add(t);
+            }
+        }
+        return list;
     }
 
     private String toItemsJson(List<CardEventBroadcaster.CartItem> items) {

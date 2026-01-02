@@ -35,6 +35,8 @@ public class MembersDao {
                     "  expiry_date TEXT,\n" +
                     "  card_uid TEXT,\n" +
                     "  rsa_public_key TEXT,\n" +
+                    "  rsa_modulus TEXT,\n" +
+                    "  rsa_exponent TEXT,\n" +
                     "  transaction_history TEXT,\n" +
                     "  pinretry INTEGER DEFAULT 5,\n" +
                         "  cccd TEXT,\n" +
@@ -46,12 +48,14 @@ public class MembersDao {
                 // Attempt to add columns if older DB exists (ignore errors if already present)
                 try { st.executeUpdate("ALTER TABLE members ADD COLUMN cccd TEXT"); } catch (Exception ignored) {}
                 try { st.executeUpdate("ALTER TABLE members ADD COLUMN avatar_data BLOB"); } catch (Exception ignored) {}
+                try { st.executeUpdate("ALTER TABLE members ADD COLUMN rsa_modulus TEXT"); } catch (Exception ignored) {}
+                try { st.executeUpdate("ALTER TABLE members ADD COLUMN rsa_exponent TEXT"); } catch (Exception ignored) {}
         }
         return conn;
     }
 
     public MemberRecord getByUserId(int userId) throws SQLException {
-        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, transaction_history, pinretry, cccd, avatar_data, created_at, updated_at " +
+        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, rsa_modulus, rsa_exponent, transaction_history, pinretry, cccd, avatar_data, created_at, updated_at " +
                      "FROM members WHERE id = ?";
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, userId);
@@ -63,7 +67,7 @@ public class MembersDao {
     }
 
     public List<MemberRecord> getAll() throws SQLException {
-        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, transaction_history, pinretry, cccd, avatar_data, created_at, updated_at FROM members ORDER BY id";
+        String sql = "SELECT id, full_name, balance_vnd, birthdate, expiry_date, card_uid, rsa_public_key, rsa_modulus, rsa_exponent, transaction_history, pinretry, cccd, avatar_data, created_at, updated_at FROM members ORDER BY id";
         List<MemberRecord> list = new ArrayList<>();
         try (Connection conn = getConnection(); Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
             while (rs.next()) list.add(map(rs));
@@ -120,6 +124,8 @@ public class MembersDao {
         m.balanceVnd = rs.getInt("balance_vnd");
         m.cardUid = rs.getString("card_uid");
         m.rsaPublicKey = rs.getString("rsa_public_key");
+        try { m.rsaModulusHex = rs.getString("rsa_modulus"); } catch (SQLException ignored) { m.rsaModulusHex = null; }
+        try { m.rsaExponentHex = rs.getString("rsa_exponent"); } catch (SQLException ignored) { m.rsaExponentHex = null; }
         m.transactionHistory = rs.getString("transaction_history");
         m.pinretry = rs.getShort("pinretry");
         m.createdAt = rs.getString("created_at");
@@ -132,5 +138,15 @@ public class MembersDao {
         String ed = rs.getString("expiry_date");
         m.expiryDate = (ed != null && !ed.isEmpty()) ? LocalDate.parse(ed) : null;
         return m;
+    }
+
+    public void updateRsaPublicKeyHex(int userId, String modulusHex, String exponentHex) throws SQLException {
+        String sql = "UPDATE members SET rsa_modulus = ?, rsa_exponent = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, modulusHex);
+            ps.setString(2, exponentHex);
+            ps.setInt(3, userId);
+            ps.executeUpdate();
+        }
     }
 }

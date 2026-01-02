@@ -20,14 +20,21 @@ public class MembersTableDialog extends JDialog {
         JPanel top = new JPanel(new BorderLayout(8,8));
         searchField = new JTextField();
         JButton refreshBtn = new JButton("Tải Lại");
+        JButton txBtn = new JButton("Lịch Sử Giao Dịch");
         refreshBtn.addActionListener(e -> reload());
-        top.add(new JLabel("Tìm (ID/Họ Tên/CCCD):"), BorderLayout.WEST);
+        txBtn.addActionListener(e -> {
+            new TransactionsTableDialog(owner).setVisible(true);
+        });
+        JPanel leftTop = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        leftTop.add(new JLabel("Tìm (ID/Họ Tên/CCCD):"));
+        leftTop.add(txBtn);
+        top.add(leftTop, BorderLayout.WEST);
         top.add(searchField, BorderLayout.CENTER);
         top.add(refreshBtn, BorderLayout.EAST);
         add(top, BorderLayout.NORTH);
 
         model = new DefaultTableModel(new Object[]{
-            "ID", "Họ Tên", "Số Dư (VND)", "Ngày Sinh", "Hạn Tập", "CCCD", "RSA", "Lịch Sử GD", "PIN Retry", "Tạo Lúc", "Cập Nhật"
+            "ID", "Họ Tên", "Số Dư (VND)", "Ngày Sinh", "Hạn Tập", "CCCD", "RSA", "Modulus (Hex)", "Exponent (Hex)", "Lịch Sử GD", "PIN Retry", "Tạo Lúc", "Cập Nhật"
         }, 0) {
             @Override public boolean isCellEditable(int row, int column) { return false; }
         };
@@ -59,7 +66,9 @@ public class MembersTableDialog extends JDialog {
                     String idStr = String.valueOf(m.id);
                     String name = m.fullName != null ? m.fullName.toLowerCase() : "";
                     String cccd = m.cccd != null ? m.cccd.toLowerCase() : "";
-                    if (!(idStr.contains(query) || name.contains(query) || cccd.contains(query))) {
+                    String modHex = m.rsaModulusHex != null ? m.rsaModulusHex.toLowerCase() : "";
+                    String expHex = m.rsaExponentHex != null ? m.rsaExponentHex.toLowerCase() : "";
+                    if (!(idStr.contains(query) || name.contains(query) || cccd.contains(query) || modHex.contains(query) || expHex.contains(query))) {
                         continue;
                     }
                 }
@@ -70,7 +79,9 @@ public class MembersTableDialog extends JDialog {
                     m.birthdate != null ? m.birthdate : "",
                     m.expiryDate != null ? m.expiryDate : "",
                     m.cccd != null ? m.cccd : "",
-                    (m.rsaPublicKey != null && !m.rsaPublicKey.isEmpty()) ? "Có" : "Không",
+                    ((m.rsaModulusHex != null && !m.rsaModulusHex.isEmpty()) && (m.rsaExponentHex != null && !m.rsaExponentHex.isEmpty())) ? "Có" : "Không",
+                    m.rsaModulusHex != null ? m.rsaModulusHex : "",
+                    m.rsaExponentHex != null ? m.rsaExponentHex : "",
                     m.transactionHistory != null ? m.transactionHistory : "",
                     m.pinretry,
                     m.createdAt != null ? m.createdAt : "",
