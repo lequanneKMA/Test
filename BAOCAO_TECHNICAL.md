@@ -175,6 +175,11 @@ SW1-SW2 = Status Word (mã trạng thái)
 
 *WRITE yêu cầu PIN trừ trường hợp thẻ trống hoặc reset về 0.
 
+Lưu ý về cột "Yêu Cầu PIN":
+- "Không" nghĩa là lệnh không đòi hỏi trạng thái đã-xác-thực trước khi gọi. `VERIFY_PIN (0x20)` chính là lệnh dùng để thực hiện việc xác thực, nên bản thân nó không yêu cầu đã xác thực.
+- `READ (0xB0)` có thể đọc 80 byte dữ liệu bất kỳ lúc nào, nhưng các trường nhạy cảm nằm trong 48 byte payload được mã hóa. Nếu chưa gửi `VERIFY_PIN`, host chỉ thấy dữ liệu mã hóa; sau khi `VERIFY_PIN` thành công, thẻ trả về bản đã giải mã (trong response của VERIFY) để ứng dụng hiển thị.
+- Các lệnh như `WRITE`, `CHANGE_PIN`… yêu cầu PIN (đã xác thực) vì chúng thay đổi trạng thái dữ liệu trên thẻ; nếu chưa xác thực, thẻ sẽ trả mã trạng thái 69 82 (Security condition not satisfied).
+
 ### 2.3 Select Applet
 
 Trước khi giao tiếp, host phải chọn applet trên thẻ:
@@ -211,8 +216,7 @@ Hệ thống sử dụng **SQLite** với driver `sqlite-jdbc` để lưu trữ 
 │ full_name       TEXT                                         │
 │ balance_vnd     INTEGER DEFAULT 0                           │
 │ birthdate       TEXT                  -- Format: YYYY-MM-DD │
-│ expiry_date     TEXT                  -- Ngày hết hạn tập   │
-│ card_uid        TEXT                  -- UID vật lý của thẻ │
+│ expiry_date     TEXT                  -- Ngày hết hạn tập   ││
 │ rsa_modulus     TEXT                  -- RSA modulus (hex)  │
 │ rsa_exponent    TEXT                  -- RSA exponent (hex) │
 │ pinretry        INTEGER DEFAULT 5     -- Số lần thử PIN     │
