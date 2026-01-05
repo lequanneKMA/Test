@@ -7,11 +7,11 @@ import java.security.Signature;
 import java.security.spec.RSAPublicKeySpec;
 
 /**
- * RSA registration and login verification helpers for SmartCard.
+ * RSA Key Service: Đăng ký và xác thực khóa công khai RSA với thẻ thông minh.
  */
 public class RsaKeyService {
     /**
-     * Convert byte[] to HEX string (uppercase, no spaces)
+     * Convert byte[] to HEX string
      */
     public static String bytesToHex(byte[] data) {
         if (data == null) return null;
@@ -21,7 +21,7 @@ public class RsaKeyService {
     }
 
     /**
-     * Convert HEX string to byte[] (ignores spaces)
+     * convert HEX string to byte[]
      */
     public static byte[] hexToBytes(String hex) {
         if (hex == null) return null;
@@ -38,7 +38,7 @@ public class RsaKeyService {
     }
 
     /**
-     * Registration: Read RSA public key from card and store into DB as hex strings.
+     * Đăng ký khóa công khai RSA từ thẻ vào Database.
      */
     public static void registerCardPublicKey(PcscClient pcsc, int userId) throws Exception {
         ResponseAPDU resp = pcsc.transmit(CardHelper.buildGetPublicKeyCommand());
@@ -47,28 +47,17 @@ public class RsaKeyService {
         }
         byte[] data = resp.getData();
         if (data == null || data.length < 131) {
-            // Accept shorter if card returns minimal length; modulus then exponent
-            // Try to split assuming 1024-bit modulus
-            if (data == null || data.length < 131 - 3) {
-                throw new IllegalStateException("Unexpected public key length: " + (data == null ? 0 : data.length));
-            }
+            throw new IllegalStateException("Unexpected public key length: " + (data == null ? 0 : data.length));
         }
-        // Split into modulus and exponent; prefer 128+3 layout
-        byte[] modulus;
-        byte[] exponent;
-        if (data.length >= 131) {
-            modulus = new byte[128];
-            System.arraycopy(data, 0, modulus, 0, 128);
-            exponent = new byte[data.length - 128];
-            System.arraycopy(data, 128, exponent, 0, exponent.length);
-        } else {
-            // Fallback: assume last 3 bytes are exponent
-            int expLen = 3;
-            exponent = new byte[expLen];
-            System.arraycopy(data, data.length - expLen, exponent, 0, expLen);
-            modulus = new byte[data.length - expLen];
-            System.arraycopy(data, 0, modulus, 0, modulus.length);
+        // tách modulus và exponent
+        int expLen = 3;
+        if (data.length < expLen + 1) {
+            throw new IllegalStateException("Public key too short: " + data.length);
         }
+        byte[] exponent = new byte[expLen];
+        System.arraycopy(data, data.length - expLen, exponent, 0, expLen);
+        byte[] modulus = new byte[data.length - expLen];
+        System.arraycopy(data, 0, modulus, 0, modulus.length);
 
         String modHex = bytesToHex(modulus);
         String expHex = bytesToHex(exponent);
@@ -78,7 +67,7 @@ public class RsaKeyService {
     }
 
     /**
-     * Verify login via RSA challenge-response using public key from DB.
+     * Kiểm tra đăng nhập thẻ bằng xác thực RSA.
      */
     public static boolean verifyCardLogin(PcscClient pcsc, int userId) throws Exception {
         MembersDao dao = new MembersDao();
@@ -91,25 +80,25 @@ public class RsaKeyService {
         byte[] modulusBytes = hexToBytes(rec.rsaModulusHex);
         byte[] exponentBytes = hexToBytes(rec.rsaExponentHex);
 
-        // Construct PublicKey; handle potential leading 0x00 sign byte by using positive BigInteger
+        // Xây dựng PublicKey từ modulus và exponent
         BigInteger n = new BigInteger(1, modulusBytes);
         BigInteger e = new BigInteger(1, exponentBytes);
         RSAPublicKeySpec spec = new RSAPublicKeySpec(n, e);
         KeyFactory kf = KeyFactory.getInstance("RSA");
         PublicKey pub = kf.generatePublic(spec);
 
-        // Create random 32-byte challenge
+        // Tạo challenge ngẫu nhiên 32 bytes
         byte[] challenge = new byte[32];
         new SecureRandom().nextBytes(challenge);
 
-        // Send to card to sign
+        // Gửi challenge đến thẻ để ký
         ResponseAPDU sigResp = pcsc.transmit(CardHelper.buildSignChallengeCommand(challenge));
         if (!CardHelper.isSuccess(sigResp)) {
             throw new IllegalStateException("SIGN_CHALLENGE failed: SW=0x" + Integer.toHexString(sigResp.getSW()).toUpperCase());
         }
         byte[] signature = sigResp.getData();
 
-        // Verify signature with SHA1withRSA (must match applet)
+        // Verify signature với SHA1withRSA 
         Signature verifier = Signature.getInstance("SHA1withRSA");
         verifier.initVerify(pub);
         verifier.update(challenge);

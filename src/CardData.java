@@ -122,22 +122,22 @@ public class CardData {
             sb.append("👤 Họ Tên: ").append(fullName).append("\n");
         }
         
-        sb.append("🎂 Ngày Sinh: ").append(getDobString()).append("\n");
-        sb.append("🎫 ID Thẻ: ").append(userId).append("\n");
+        sb.append("Ngày Sinh: ").append(getDobString()).append("\n");
+        sb.append("ID Thẻ: ").append(userId).append("\n");
         
         // CRITICAL: Check if encrypted before display
         if (balance == -1) {
-            sb.append("💰 Số Dư: [MÃ HÓA]\n");
-            sb.append("   ℹ️ Cần xác thực PIN để xem\n");
+            sb.append("Số Dư: [MÃ HÓA]\n");
+            sb.append("Cần xác thực PIN để xem\n");
         } else {
-            sb.append("💰 Số Dư: ").append(String.format("%,d VND", balance)).append("\n");
+            sb.append("Số Dư: ").append(String.format("%,d VND", balance)).append("\n");
         }
         
         if (expiryDays == -1) {
-            sb.append("📅 Hạn Tập: [MÃ HÓA]\n");
-            sb.append("   ℹ️ Cần xác thực PIN để xem\n");
+            sb.append("Hạn Tập: [MÃ HÓA]\n");
+            sb.append("Cần xác thực PIN để xem\n");
         } else {
-            sb.append("📅 Hạn Tập: ").append(expiryDays).append(" ngày\n");
+            sb.append("Hạn Tập: ").append(expiryDays).append(" ngày\n");
             if (isExpired()) {
                 sb.append("   ❌ THẺ ĐÃ HẾT HẠN!\n");
             } else if (isExpiringSoon()) {
@@ -148,7 +148,7 @@ public class CardData {
         sb.append("\n");
         
         if (isLocked()) {
-            sb.append("🔒 Trạng Thái: KHÓA\n");
+            sb.append("Trạng Thái: KHÓA\n");
             sb.append("⚠️ Liên hệ admin để mở khóa\n");
         } else {
             sb.append("✅ Trạng Thái: ").append(getStatusText()).append("\n");

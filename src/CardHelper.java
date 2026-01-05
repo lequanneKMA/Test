@@ -119,7 +119,7 @@ public class CardHelper {
     
     /**
      * Build: 00 82 00 00 83 - Get RSA public key
-     * Response: [Modulus 128 bytes][Exponent 3 bytes] = 131 bytes
+     * Response: [Modulus 128 bytes][Exponent 3 bytes] = 131 bytes (RSA-1024)
      */
     public static CommandAPDU buildGetPublicKeyCommand() {
         return new CommandAPDU(0x00, INS_GET_PUBLIC_KEY, 0x00, 0x00, 131);
@@ -127,7 +127,7 @@ public class CardHelper {
     
     /**
      * Build: 00 88 00 00 20 [32-byte challenge] - Sign challenge for authentication
-     * Response: [128-byte RSA signature]
+     * Response: [128-byte RSA signature] (RSA-1024)
      */
     public static CommandAPDU buildSignChallengeCommand(byte[] challenge) {
         if (challenge == null || challenge.length != 32) {

@@ -98,7 +98,7 @@ public class SmartCard extends Applet {
             
             rsaKeyPair = new KeyPair(KeyPair.ALG_RSA, KeyBuilder.LENGTH_RSA_1024);
             rsaKeyPair.genKeyPair();
-            
+
             rsaSignature = Signature.getInstance(Signature.ALG_RSA_SHA_PKCS1, false);
             rsaSignature.init(rsaKeyPair.getPrivate(), Signature.MODE_SIGN);
             
@@ -203,9 +203,10 @@ public class SmartCard extends Applet {
         Util.arrayCopyNonAtomic(buf, (short)(ISO7816.OFFSET_CDATA + OFFSET_PIN_HASH), cardData, OFFSET_PIN_HASH, (short) 16);
         // Reserved [83-95] remain zeros
         
-        // ✅ Generate new RSA keypair when creating/resetting card
-        // This ensures each card has unique RSA identity
+        // ✅ Generate a NEW RSA-1024 keypair on create/reset (migration-safe)
+        // Rebuild KeyPair object to enforce key length even on existing applet instances
         if (isBlankCard || isResetting) {
+            rsaKeyPair = new KeyPair(KeyPair.ALG_RSA, KeyBuilder.LENGTH_RSA_1024);
             rsaKeyPair.genKeyPair();
             rsaSignature.init(rsaKeyPair.getPrivate(), Signature.MODE_SIGN);
         }
