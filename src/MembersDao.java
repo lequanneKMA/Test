@@ -39,13 +39,15 @@ public class MembersDao {
                     "  rsa_exponent TEXT,\n" +
                     "  transaction_history TEXT,\n" +
                     "  pinretry INTEGER DEFAULT 5,\n" +
-                        "  cccd TEXT,\n" +
+                        "  cccd TEXT CHECK (cccd IS NULL OR (length(cccd) = 12 AND cccd GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]')),\n" +
                         "  avatar_data BLOB,\n" +
                         "  last_checkin_date TEXT,\n" +
                     "  created_at TEXT DEFAULT (datetime('now','localtime')),\n" +
                     "  updated_at TEXT DEFAULT (datetime('now','localtime'))\n" +
                     ")");
             st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_members_card_uid ON members(card_uid)");
+                // Ensure CCCD is unique to prevent duplicates (ignore if existing or conflicts)
+                try { st.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS idx_members_cccd_unique ON members(cccd)"); } catch (Exception ignored) {}
                 // Attempt to add columns if older DB exists (ignore errors if already present)
                 try { st.executeUpdate("ALTER TABLE members ADD COLUMN cccd TEXT"); } catch (Exception ignored) {}
                 try { st.executeUpdate("ALTER TABLE members ADD COLUMN avatar_data BLOB"); } catch (Exception ignored) {}
@@ -160,6 +162,53 @@ public class MembersDao {
             ps.setString(2, todayStr);
             ps.setInt(3, memberId);
             ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Check if a CCCD already exists in DB (case-insensitive).
+     */
+    public boolean existsCccd(String cccd) throws SQLException {
+        if (cccd == null || cccd.trim().isEmpty()) return false;
+        String sql = "SELECT 1 FROM members WHERE LOWER(cccd) = LOWER(?) LIMIT 1";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, cccd.trim());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    /**
+     * Check if a CCCD exists for any member other than given ID.
+     */
+    public boolean existsCccdExceptId(String cccd, int excludeId) throws SQLException {
+        if (cccd == null || cccd.trim().isEmpty()) return false;
+        String sql = "SELECT 1 FROM members WHERE LOWER(cccd) = LOWER(?) AND id <> ? LIMIT 1";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, cccd.trim());
+            ps.setInt(2, excludeId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    /**
+     * Xóa member và tất cả transactions liên quan khỏi database
+     */
+    public void deleteMember(int memberId) throws SQLException {
+        try (Connection conn = getConnection()) {
+            // Xóa transactions trước (foreign key)
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM transactions WHERE member_id = ?")) {
+                ps.setInt(1, memberId);
+                ps.executeUpdate();
+            }
+            // Xóa member
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM members WHERE id = ?")) {
+                ps.setInt(1, memberId);
+                ps.executeUpdate();
+            }
         }
     }
 }

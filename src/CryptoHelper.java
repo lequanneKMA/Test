@@ -1,18 +1,21 @@
 import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
+import javax.crypto.spec.IvParameterSpec;
 import java.security.MessageDigest;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.SecureRandom;
 import java.security.spec.RSAPublicKeySpec;
 import java.math.BigInteger;
 
 /**
  * Cryptographic utilities - SECURE LAYOUT (PII ENCRYPTED)
  * 
- * New Card Structure (80 bytes):
+ * Card Structure (96 bytes) - AES-128-CBC with Random IV:
  * [0-1]   UserID (2 bytes)
- * [2-49]  Encrypted Area (48 bytes, AES-128/ECB/NoPadding):
+ * [2-17]  IV (16 bytes, random for each write)
+ * [18-65] Encrypted Area (48 bytes, AES-128/CBC/NoPadding):
  *          Plaintext layout (48 bytes):
  *            - Balance (4 bytes, BE)
  *            - ExpiryDays (2 bytes, BE)
@@ -23,9 +26,9 @@ import java.math.BigInteger;
  *            - FullName UTF-8 bytes (max 21)
  *            - CCCD ASCII (12 bytes)
  *            - Padding with zeros to 48 bytes (4 bytes)
- * [50]    PIN Retry Counter (1 byte)
- * [51-66] PIN Hash (16 bytes, SHA-256 truncated to 16)
- * [67-79] Reserved (zeros)
+ * [66]    PIN Retry Counter (1 byte)
+ * [67-82] PIN Hash (16 bytes, SHA-256 truncated to 16)
+ * [83-95] Reserved (zeros)
  */
 public class CryptoHelper {
     
@@ -73,8 +76,64 @@ public class CryptoHelper {
 }
     
     /**
-     * Encrypt two-block sensitive payload (32 bytes) using AES-128 (ECB/NoPadding)
+     * Generate random 16-byte IV for AES-CBC
      */
+    public static byte[] generateRandomIV() {
+        byte[] iv = new byte[16];
+        new SecureRandom().nextBytes(iv);
+        return iv;
+    }
+    
+    /**
+     * Encrypt sensitive payload (48 bytes) using AES-128-CBC with random IV
+     * @return 64 bytes: IV (16) + Ciphertext (48)
+     */
+    public static byte[] encryptSensitivePayloadCBC(byte[] payload48, String pin) throws Exception {
+        if (payload48 == null || payload48.length != 48) {
+            throw new IllegalArgumentException("Payload must be exactly 48 bytes");
+        }
+        SecretKeySpec aesKey = deriveAESKeyFromPIN(pin);
+        byte[] iv = generateRandomIV();
+        IvParameterSpec ivSpec = new IvParameterSpec(iv);
+        
+        Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, aesKey, ivSpec);
+        byte[] encrypted = cipher.doFinal(payload48);
+        
+        // Combine IV + Ciphertext
+        byte[] result = new byte[64];
+        System.arraycopy(iv, 0, result, 0, 16);
+        System.arraycopy(encrypted, 0, result, 16, 48);
+        
+        printHex("🔐 IV (random)", iv);
+        return result;
+    }
+    
+    /**
+     * Decrypt sensitive payload using AES-128-CBC
+     * @param ivAndCiphertext 64 bytes: IV (16) + Ciphertext (48)
+     */
+    public static byte[] decryptSensitivePayloadCBC(byte[] ivAndCiphertext, String pin) throws Exception {
+        if (ivAndCiphertext == null || ivAndCiphertext.length != 64) {
+            throw new IllegalArgumentException("Data must be 64 bytes (IV + Ciphertext)");
+        }
+        
+        // Extract IV and ciphertext
+        byte[] iv = new byte[16];
+        byte[] encrypted = new byte[48];
+        System.arraycopy(ivAndCiphertext, 0, iv, 0, 16);
+        System.arraycopy(ivAndCiphertext, 16, encrypted, 0, 48);
+        
+        SecretKeySpec aesKey = deriveAESKeyFromPIN(pin);
+        IvParameterSpec ivSpec = new IvParameterSpec(iv);
+        
+        Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
+        cipher.init(Cipher.DECRYPT_MODE, aesKey, ivSpec);
+        return cipher.doFinal(encrypted);
+    }
+    
+    // ===== Legacy ECB methods (deprecated, for migration only) =====
+    @Deprecated
     public static byte[] encryptSensitivePayload(byte[] payload48, String pin) throws Exception {
         if (payload48 == null || payload48.length != 48) {
             throw new IllegalArgumentException("Payload must be exactly 48 bytes");
@@ -85,6 +144,7 @@ public class CryptoHelper {
         return cipher.doFinal(payload48);
     }
     
+    @Deprecated
     public static byte[] decryptSensitivePayload(byte[] encrypted48, String pin) throws Exception {
         if (encrypted48 == null || encrypted48.length != 48) {
             throw new IllegalArgumentException("Encrypted data must be 48 bytes");
@@ -136,14 +196,14 @@ public class CryptoHelper {
     }
     
     /**
-     * Build card data for WRITE - 80-byte layout with 48-byte encrypted block
+     * Build card data for WRITE - 96-byte layout with AES-128-CBC (IV + 48-byte encrypted block)
      */
     public static byte[] buildCardData(int userId, int balance, short expiry, 
                                        String pin, byte pinRetry,
                                        byte dobDay, byte dobMonth, short dobYear,
                                        String fullName,
                                        String cccd) throws Exception {
-        byte[] cardData = new byte[80];
+        byte[] cardData = new byte[96];
         
         // [0-1] UserID
         cardData[0] = (byte) ((userId >> 8) & 0xFF);
@@ -178,49 +238,51 @@ public class CryptoHelper {
             System.arraycopy(cccdBytes, 0, payload, 32, copyLen);
         }
         // Padding with zeros is automatic in new byte[]
-        // Encrypt and place into [2-49]
-        byte[] enc = encryptSensitivePayload(payload, pin);
-        System.arraycopy(enc, 0, cardData, 2, 48);
+        
+        // Encrypt with CBC (returns 64 bytes: IV + ciphertext)
+        byte[] ivAndEncrypted = encryptSensitivePayloadCBC(payload, pin);
+        // [2-17] IV, [18-65] Encrypted
+        System.arraycopy(ivAndEncrypted, 0, cardData, 2, 64);
 
-        // [50] PIN Retry Counter
-        cardData[50] = pinRetry;
+        // [66] PIN Retry Counter
+        cardData[66] = pinRetry;
 
-        // [51-66] PIN Hash (16 bytes)
+        // [67-82] PIN Hash (16 bytes)
         byte[] pinHash = hashPIN(pin);
-        System.arraycopy(pinHash, 0, cardData, 51, 16);
+        System.arraycopy(pinHash, 0, cardData, 67, 16);
 
-        // [67-79] reserved zeros
+        // [83-95] reserved zeros
         
         return cardData;
     }
     
     /**
-     * Parse ENCRYPTED card data (from READ command)
+     * Parse ENCRYPTED card data (from READ command) - AES-128-CBC
      * Requires PIN to decrypt balance/expiry
      * 
-     * @param data 80-byte encrypted card data
+     * @param data 96-byte encrypted card data (with IV)
      * @param pin PIN for decryption (6-digit string)
      */
     public static CardData parseEncryptedCardData(byte[] data, String pin) throws Exception {
-        if (data.length < 80) {
-            throw new IllegalArgumentException("Card data must be 80 bytes");
+        if (data.length < 96) {
+            throw new IllegalArgumentException("Card data must be 96 bytes");
         }
         if (pin == null || pin.isEmpty()) {
             throw new IllegalArgumentException("PIN required to decrypt data");
         }
         
-        System.out.println("=== DEBUG parseEncryptedCardData (48B ENC) ===");
+        System.out.println("=== DEBUG parseEncryptedCardData (CBC with IV) ===");
         
         CardData card = new CardData();
         
         // [0-1] UserID
         card.userId = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
         
-        // [2-49] Encrypted payload (48 bytes) - decrypt with PIN
+        // [2-65] IV (16 bytes) + Encrypted payload (48 bytes) - decrypt with PIN
         try {
-            byte[] encryptedBlock = new byte[48];
-            System.arraycopy(data, 2, encryptedBlock, 0, 48);
-            byte[] decrypted = decryptSensitivePayload(encryptedBlock, pin);
+            byte[] ivAndEncrypted = new byte[64];
+            System.arraycopy(data, 2, ivAndEncrypted, 0, 64);
+            byte[] decrypted = decryptSensitivePayloadCBC(ivAndEncrypted, pin);
 
             // Parse fields
             card.balance = ((decrypted[0] & 0xFF) << 24) |
@@ -244,34 +306,35 @@ public class CryptoHelper {
             throw new Exception("Failed to decrypt card data: " + e.getMessage(), e);
         }
         
-        // [50] PIN Retry
-        card.pinRetry = data[50];
+        // [66] PIN Retry
+        card.pinRetry = data[66];
         
         return card;
     }
     
     /**
      * Parse DECRYPTED card data (from VERIFY_PIN response)
-     * Data [2-17] is already plaintext, no decryption needed
+     * Data is already plaintext (after IV), no decryption needed
      * 
-     * @param data 80-byte decrypted card data
+     * @param data 96-byte card data (IV skipped, plaintext at [18-65])
      * @param pin PIN value (for storing in CardData.pin field)
      */
     public static CardData parseDecryptedCardData(byte[] data, String pin) throws Exception {
-        if (data.length < 80) {
-            throw new IllegalArgumentException("Card data must be 80 bytes");
+        if (data.length < 96) {
+            throw new IllegalArgumentException("Card data must be 96 bytes");
         }
         
-        System.out.println("=== DEBUG parseDecryptedCardData (48B plain) ===");
+        System.out.println("=== DEBUG parseDecryptedCardData (CBC, 48B plain) ===");
         
         CardData card = new CardData();
         
         // [0-1] UserID
         card.userId = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
         
-        // [2-49] plain payload (48 bytes)
+        // [2-17] IV (skip)
+        // [18-65] plain payload (48 bytes)
         byte[] plain = new byte[48];
-        System.arraycopy(data, 2, plain, 0, 48);
+        System.arraycopy(data, 18, plain, 0, 48);
         card.balance = ((plain[0] & 0xFF) << 24) |
                       ((plain[1] & 0xFF) << 16) |
                       ((plain[2] & 0xFF) << 8) |
@@ -285,8 +348,8 @@ public class CryptoHelper {
         // CCCD
         card.cccd = new String(plain, 32, 12, "US-ASCII").trim();
         
-        // [50] PIN Retry
-        card.pinRetry = data[50];
+        // [66] PIN Retry
+        card.pinRetry = data[66];
         
         return card;
     }

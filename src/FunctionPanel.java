@@ -1,4 +1,6 @@
 import javax.swing.*;
+import javax.swing.text.DocumentFilter;
+import javax.swing.text.PlainDocument;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import javax.imageio.ImageIO;
@@ -239,7 +241,10 @@ public class FunctionPanel extends JPanel {
         JPanel datePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         JSpinner daySpinner = new JSpinner(new SpinnerNumberModel(1, 1, 31, 1));
         JSpinner monthSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 12, 1));
-        JSpinner yearSpinner = new JSpinner(new SpinnerNumberModel(2000, 1900, 2025, 1));
+        JSpinner yearSpinner = new JSpinner(new SpinnerNumberModel(2000, 1900, 2100, 1));
+        // Tắt dấu phẩy phân cách hàng nghìn (1,000 -> 2000)
+        JSpinner.NumberEditor yearEditor = new JSpinner.NumberEditor(yearSpinner, "#");
+        yearSpinner.setEditor(yearEditor);
         daySpinner.setPreferredSize(new Dimension(50, 25));
         monthSpinner.setPreferredSize(new Dimension(50, 25));
         yearSpinner.setPreferredSize(new Dimension(70, 25));
@@ -252,8 +257,39 @@ public class FunctionPanel extends JPanel {
         gbc.gridx = 1;
         panel.add(datePanel, gbc);
 
-        // CCCD (optional)
+        // CCCD (bắt buộc 12 số)
         JTextField cccdField = new JTextField(20);
+        // Chỉ cho phép nhập số và tối đa 12 ký tự
+        PlainDocument cccdDoc = (PlainDocument) cccdField.getDocument();
+        cccdDoc.setDocumentFilter(new DocumentFilter() {
+            @Override
+            public void insertString(FilterBypass fb, int offset, String string, javax.swing.text.AttributeSet attr)
+                    throws javax.swing.text.BadLocationException {
+                if (string == null) return;
+                String digits = string.replaceAll("\\D", "");
+                int newLen = fb.getDocument().getLength() + digits.length();
+                if (newLen <= 12) {
+                    super.insertString(fb, offset, digits, attr);
+                } else {
+                    int allowed = 12 - fb.getDocument().getLength();
+                    if (allowed > 0) super.insertString(fb, offset, digits.substring(0, Math.min(allowed, digits.length())), attr);
+                }
+            }
+
+            @Override
+            public void replace(FilterBypass fb, int offset, int length, String text, javax.swing.text.AttributeSet attrs)
+                    throws javax.swing.text.BadLocationException {
+                String digits = text != null ? text.replaceAll("\\D", "") : "";
+                int curLen = fb.getDocument().getLength();
+                int newLen = curLen - length + digits.length();
+                if (newLen <= 12) {
+                    super.replace(fb, offset, length, digits, attrs);
+                } else {
+                    int allowed = 12 - (curLen - length);
+                    if (allowed > 0) super.replace(fb, offset, length, digits.substring(0, Math.min(allowed, digits.length())), attrs);
+                }
+            }
+        });
         gbc.gridx = 0; gbc.gridy = 2;
         panel.add(new JLabel("CCCD:"), gbc);
         gbc.gridx = 1;
@@ -338,7 +374,13 @@ public class FunctionPanel extends JPanel {
             // ID tự động (random hoặc tăng dần)
             newCard.userId = (int) (Math.random() * 65535) + 1;
             newCard.fullName = fullName;
-            newCard.cccd = cccdField.getText().trim();
+            // Validate CCCD bắt buộc 12 số
+            String cccdStr = cccdField.getText().trim();
+            if (!cccdStr.matches("\\d{12}")) {
+                JOptionPane.showMessageDialog(this, "❌ CCCD phải gồm đúng 12 chữ số!");
+                return;
+            }
+            newCard.cccd = cccdStr;
             newCard.balance = Integer.parseInt(balanceField.getText());
             newCard.expiryDays = (short) Integer.parseInt(expiryField.getText());
             
@@ -350,6 +392,18 @@ public class FunctionPanel extends JPanel {
             // PIN
             newCard.pin = pinStr; // Use full 6-digit string
             newCard.pinRetry = 5; // Default 5 attempts
+
+            // Validate CCCD uniqueness before proceeding
+            if (newCard.cccd != null && !newCard.cccd.isEmpty()) {
+                MembersDao dao = new MembersDao();
+                if (dao.existsCccd(newCard.cccd)) {
+                    JOptionPane.showMessageDialog(this,
+                        "❌ CCCD đã tồn tại trong Database. Vui lòng nhập CCCD khác.",
+                        "Trùng CCCD",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+            }
 
             logArea.append("\n[BƯỚC 1] Kết nối thẻ...\n");
             pcsc.connectFirstPresentOrFirst();
@@ -381,9 +435,9 @@ public class FunctionPanel extends JPanel {
                     logArea.append("[CẢNH BÁO] Thẻ đã có dữ liệu (UserID: " + existingUserId + ")\n");
                     logArea.append("[BƯỚC 2.6] Xóa dữ liệu cũ (reset thẻ)...\n");
                     
-                    // Write blank data (UserID=0) to reset card - 80 bytes layout
-                    byte[] blankData = new byte[80];
-                    blankData[50] = 5; // Reset PIN retry to 5 (offset 50 in new layout)
+                    // Write blank data (UserID=0) to reset card - 96 bytes layout (CBC with IV)
+                    byte[] blankData = new byte[96];
+                    blankData[66] = 5; // Reset PIN retry to 5 (offset 66 in CBC layout)
                     
                     javax.smartcardio.CommandAPDU deleteCmd = 
                         new javax.smartcardio.CommandAPDU(0x00, 0xD0, 0x00, 0x00, blankData);
@@ -703,10 +757,33 @@ public class FunctionPanel extends JPanel {
             
             CardData card = CardHelper.parseReadResponse(readResp.getData());
             
+            if (card.userId == 0) {
+                logArea.append("[THÔNG BÁO] Thẻ đã trống, không cần xóa\n");
+                return;
+            }
+            
+            // Lấy thông tin từ Database để hiển thị
+            MembersDao dao = new MembersDao();
+            MemberRecord dbRecord = dao.getByUserId(card.userId);
+            
+            String memberInfo;
+            if (dbRecord != null) {
+                memberInfo = "ID: " + dbRecord.id + "\n" +
+                            "Họ Tên: " + (dbRecord.fullName != null ? dbRecord.fullName : "[Không có]") + "\n" +
+                            "Ngày Sinh: " + (dbRecord.birthdate != null ? dbRecord.birthdate : "[Không có]") + "\n" +
+                            "Số Dư: " + String.format("%,d", dbRecord.balanceVnd) + " VND\n" +
+                            "Hạn Tập: " + (dbRecord.expiryDate != null ? dbRecord.expiryDate : "[Không có]") + "\n" +
+                            "CCCD: " + (dbRecord.cccd != null ? dbRecord.cccd : "[Không có]");
+            } else {
+                memberInfo = "ID: " + card.userId + "\n" +
+                            "[Không tìm thấy trong Database]";
+            }
+            
             // Confirm deletion
             String confirmMsg = "XÓA THẺ NGƯỜI DÙNG?\n\n" +
-                              formatCardInfo(card) + "\n" +
-                              "Hành động này KHÔNG THỂ HOÀN TÁC!";
+                              memberInfo + "\n\n" +
+                              "⚠️ Hành động này sẽ XÓA CẢ DỮ LIỆU TRÊN DATABASE!\n" +
+                              "KHÔNG THỂ HOÀN TÁC!";
             
             int confirm = JOptionPane.showConfirmDialog(
                 this,
@@ -737,12 +814,25 @@ public class FunctionPanel extends JPanel {
             javax.smartcardio.ResponseAPDU writeResp = pcsc.transmit(writeCmd);
             
             if ((writeResp.getSW() & 0xFF00) == 0x9000) {
-                logArea.append("[THÀNH CÔNG] Đã xóa thẻ:\n");
-                logArea.append(" Họ Tên: [Mã hóa - xem Database]\n");
-                logArea.append(" ID: " + card.userId + "\n");
-                logArea.append("Thẻ đã được reset về mặc định\n");
+                // Xóa dữ liệu trên Database
+                try {
+                    dao.deleteMember(card.userId);
+                    logArea.append("[THÀNH CÔNG] Đã xóa thẻ và dữ liệu Database:\n");
+                } catch (Exception dbEx) {
+                    logArea.append("[CẢNH BÁO] Thẻ đã xóa nhưng lỗi xóa DB: " + dbEx.getMessage() + "\n");
+                }
+                
+                if (dbRecord != null) {
+                    logArea.append(" ID: " + dbRecord.id + "\n");
+                    logArea.append(" Họ Tên: " + (dbRecord.fullName != null ? dbRecord.fullName : "[Không có]") + "\n");
+                    logArea.append(" CCCD: " + (dbRecord.cccd != null ? dbRecord.cccd : "[Không có]") + "\n");
+                } else {
+                    logArea.append(" ID: " + card.userId + "\n");
+                }
+                logArea.append("Thẻ đã được reset và dữ liệu đã xóa khỏi hệ thống\n");
+                
                 JOptionPane.showMessageDialog(this, 
-                    "Xóa thẻ thành công!\nThẻ đã được reset.",
+                    "Xóa thẻ thành công!\nThẻ đã được reset và dữ liệu đã xóa khỏi Database.",
                     "Thành Công",
                     JOptionPane.INFORMATION_MESSAGE);
             } else {
@@ -1009,7 +1099,10 @@ public class FunctionPanel extends JPanel {
             JPanel datePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
             JSpinner daySpinner = new JSpinner(new SpinnerNumberModel(decrypted.dobDay > 0 ? decrypted.dobDay : 1, 1, 31, 1));
             JSpinner monthSpinner = new JSpinner(new SpinnerNumberModel(decrypted.dobMonth > 0 ? decrypted.dobMonth : 1, 1, 12, 1));
-            JSpinner yearSpinner = new JSpinner(new SpinnerNumberModel(decrypted.dobYear > 0 ? decrypted.dobYear : 2000, 1900, 2025, 1));
+            JSpinner yearSpinner = new JSpinner(new SpinnerNumberModel(decrypted.dobYear > 0 ? decrypted.dobYear : 2000, 1900, 2100, 1));
+            // Tắt dấu phẩy phân cách hàng nghìn (1,000 -> 2000)
+            JSpinner.NumberEditor yearEditor = new JSpinner.NumberEditor(yearSpinner, "#");
+            yearSpinner.setEditor(yearEditor);
             daySpinner.setPreferredSize(new Dimension(50, 25));
             monthSpinner.setPreferredSize(new Dimension(50, 25));
             yearSpinner.setPreferredSize(new Dimension(70, 25));
@@ -1022,6 +1115,37 @@ public class FunctionPanel extends JPanel {
             panel.add(datePanel, gbc);
             
             JTextField cccdField = new JTextField(decrypted.cccd != null ? decrypted.cccd : "", 20);
+            // Filter: chỉ số và tối đa 12 ký tự
+            PlainDocument cccdDoc = (PlainDocument) cccdField.getDocument();
+            cccdDoc.setDocumentFilter(new DocumentFilter() {
+                @Override
+                public void insertString(FilterBypass fb, int offset, String string, javax.swing.text.AttributeSet attr)
+                        throws javax.swing.text.BadLocationException {
+                    if (string == null) return;
+                    String digits = string.replaceAll("\\D", "");
+                    int newLen = fb.getDocument().getLength() + digits.length();
+                    if (newLen <= 12) {
+                        super.insertString(fb, offset, digits, attr);
+                    } else {
+                        int allowed = 12 - fb.getDocument().getLength();
+                        if (allowed > 0) super.insertString(fb, offset, digits.substring(0, Math.min(allowed, digits.length())), attr);
+                    }
+                }
+
+                @Override
+                public void replace(FilterBypass fb, int offset, int length, String text, javax.swing.text.AttributeSet attrs)
+                        throws javax.swing.text.BadLocationException {
+                    String digits = text != null ? text.replaceAll("\\D", "") : "";
+                    int curLen = fb.getDocument().getLength();
+                    int newLen = curLen - length + digits.length();
+                    if (newLen <= 12) {
+                        super.replace(fb, offset, length, digits, attrs);
+                    } else {
+                        int allowed = 12 - (curLen - length);
+                        if (allowed > 0) super.replace(fb, offset, length, digits.substring(0, Math.min(allowed, digits.length())), attrs);
+                    }
+                }
+            });
             gbc.gridx = 0; gbc.gridy = 2;
             panel.add(new JLabel("CCCD:"), gbc);
             gbc.gridx = 1;
@@ -1049,11 +1173,31 @@ public class FunctionPanel extends JPanel {
             // Parse input
             String newName = nameField.getText().trim();
             String newCccd = cccdField.getText().trim();
+            // Bắt buộc CCCD đúng 12 số
+            if (!newCccd.matches("\\d{12}")) {
+                JOptionPane.showMessageDialog(this,
+                    "❌ CCCD phải gồm đúng 12 chữ số!",
+                    "CCCD không hợp lệ",
+                    JOptionPane.ERROR_MESSAGE);
+                return;
+            }
             int newBalance = Integer.parseInt(balanceField.getText().trim());
             short newExpiry = (short) Integer.parseInt(expiryField.getText().trim());
             byte newDobDay = (byte) ((Integer) daySpinner.getValue()).intValue();
             byte newDobMonth = (byte) ((Integer) monthSpinner.getValue()).intValue();
             short newDobYear = (short) ((Integer) yearSpinner.getValue()).intValue();
+
+            // Validate CCCD uniqueness (exclude current user ID)
+            if (newCccd != null && !newCccd.isEmpty()) {
+                MembersDao dao = new MembersDao();
+                if (dao.existsCccdExceptId(newCccd, decrypted.userId)) {
+                    JOptionPane.showMessageDialog(this,
+                        "❌ CCCD đã tồn tại cho thành viên khác. Vui lòng nhập CCCD khác.",
+                        "Trùng CCCD",
+                        JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+            }
             
             // B4: Ghi xuống thẻ
             logArea.append("[B3] Ghi dữ liệu mới xuống thẻ...\n");

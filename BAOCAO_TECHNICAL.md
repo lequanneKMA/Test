@@ -878,8 +878,4 @@ CryptoHelper.java   - Crypto utilities (Host-side)
 MembersDao.java     - Database access
 FunctionPanel.java  - Admin UI
 CustomerWindow.java - Customer UI
-```
 
----
-
-*Tài liệu được tạo tự động từ source code - Phiên bản 2.0*

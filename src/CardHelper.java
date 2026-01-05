@@ -6,7 +6,7 @@ import javax.crypto.spec.SecretKeySpec;
  * Helpers to build/parse APDU commands for gym smart card.
  * 
  * PHASE 2 - Security Enhanced (JavaCard 3.0.4+ Compatible):
- * - AES-128 encryption for Balance & Expiry
+ * - AES-128-CBC encryption with Random IV for Balance & PII
  * - SHA-256 hashing for PIN verification
  * - RSA-1024 for card authentication
  * 
@@ -31,23 +31,24 @@ public class CardHelper {
     public static final byte INS_AVATAR_CLEAR = (byte) 0xC3;
 
     /**
-     * Build: 00 B0 00 00 40 (read 64 bytes)
+     * Build: 00 B0 00 00 60 (read 96 bytes)
      * ISO 7816-4 READ BINARY command
      */
     public static CommandAPDU buildReadCommand() {
-        return new CommandAPDU(0x00, INS_READ, 0x00, 0x00, 80);
+        return new CommandAPDU(0x00, INS_READ, 0x00, 0x00, 96);
     }
 
     /**
-     * Build: 00 D0 00 00 40 [data...] (write 64 bytes)
+     * Build: 00 D0 00 00 60 [data...] (write 96 bytes)
      * 
-     * New Card Structure (64 bytes):
+     * Card Structure (96 bytes) - AES-128-CBC with Random IV:
      * [0-1]   UserID (2 bytes)
-     * [2-33]  Encrypted Area (32 bytes) AES-128/ECB/NoPadding of:
-     *           balance(4) | expiryDays(2) | dobDay(1) | dobMonth(1) | dobYear(2) | nameLen(1) | name(<=21) | pad
-     * [34]    PIN Retry Counter (1 byte)
-     * [35-50] PIN Hash (16 bytes, SHA-256 truncated)
-     * [51-63] Reserved (zeros)
+     * [2-17]  IV (16 bytes, random for each write)
+     * [18-65] Encrypted Area (48 bytes, AES-128/CBC/NoPadding):
+     *           balance(4) | expiryDays(2) | dobDay(1) | dobMonth(1) | dobYear(2) | nameLen(1) | name(<=21) | cccd(12) | pad
+     * [66]    PIN Retry Counter (1 byte)
+     * [67-82] PIN Hash (16 bytes, SHA-256 truncated)
+     * [83-95] Reserved (zeros)
      */
     public static CommandAPDU buildWriteCommand(CardData card) throws Exception {
         byte[] data = CryptoHelper.buildCardData(
@@ -69,14 +70,14 @@ public class CardHelper {
     /**
      * Build: 00 20 00 00 06 [6-byte ASCII PIN] - ISO 7816-4 VERIFY command
      * Verify the PIN on card.
-     * Response: 64 bytes card data if correct (SW=9000)
+     * Response: 96 bytes card data if correct (SW=9000)
      */
     public static CommandAPDU buildVerifyPinCommand(String pin) {
         byte[] pinData = pin.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
         if (pinData.length != 6) {
             throw new IllegalArgumentException("PIN must be exactly 6 digits");
         }
-        return new CommandAPDU(0x00, INS_VERIFY_PIN, 0x00, 0x00, pinData, 80);
+        return new CommandAPDU(0x00, INS_VERIFY_PIN, 0x00, 0x00, pinData, 96);
     }
     
     /**
@@ -165,8 +166,8 @@ public class CardHelper {
      * Use parseReadResponse(data, pin) to decrypt balance/expiry only.
      */
     public static CardData parseReadResponse(byte[] data) throws Exception {
-        if (data == null || data.length != 80) {
-            throw new IllegalArgumentException("Invalid data length: expected 80 bytes");
+        if (data == null || data.length != 96) {
+            throw new IllegalArgumentException("Invalid data length: expected 96 bytes");
         }
         
         CardData card = new CardData();
@@ -178,8 +179,8 @@ public class CardHelper {
         card.balance = -1;
         card.expiryDays = -1;
         
-        // [50] PIN retry counter (unencrypted)
-        card.pinRetry = data[50];
+        // [66] PIN retry counter (unencrypted)
+        card.pinRetry = data[66];
         
         // PII removed: do not expose DOB or FullName from card
         card.dobDay = 0;
@@ -215,7 +216,7 @@ public class CardHelper {
         if (sw == 0x9000) {
             // PIN correct - card returns 64 bytes of DECRYPTED data
             byte[] data = response.getData();
-            if (data == null || data.length < 80) {
+            if (data == null || data.length < 96) {
                 throw new Exception("Invalid response data length: " + (data != null ? data.length : 0));
             }
             // ✅ Use parseDecryptedCardData - data is already plaintext from card

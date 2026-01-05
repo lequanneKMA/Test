@@ -7,10 +7,15 @@ CREATE TABLE IF NOT EXISTS members (
   expiry_date TEXT,
   card_uid TEXT,
   rsa_public_key TEXT,
+  rsa_modulus TEXT,
+  rsa_exponent TEXT,
   transaction_history TEXT,
   pinretry INTEGER DEFAULT 5,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  cccd TEXT,
+  avatar_data BLOB,
+  last_checkin_date TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_members_card_uid ON members(card_uid);
@@ -21,9 +26,10 @@ CREATE TABLE IF NOT EXISTS transactions (
   member_id INTEGER NOT NULL,
   type TEXT NOT NULL, -- TOPUP, PURCHASE, RENEW
   amount INTEGER NOT NULL,
-  items TEXT, -- JSON for purchase/renew details
-  payment_method TEXT, -- QR or CASH for topup
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  items TEXT, -- JSON array of items for PURCHASE type
+  transaction_date TEXT DEFAULT (datetime('now','localtime')),
+  payment_method TEXT, 
+  created_at TEXT DEFAULT (datetime('now','localtime')),
   FOREIGN KEY(member_id) REFERENCES members(id)
 );
 
